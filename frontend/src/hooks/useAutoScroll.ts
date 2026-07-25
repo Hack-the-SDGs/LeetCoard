@@ -1,15 +1,29 @@
 import { useEffect } from "react";
 
-const SPEED_PX_PER_SEC = 22; // slow enough to read a name in passing
+const SPEED_PX_PER_SEC = 26; // slow enough to read a name in passing
 const PAUSE_MS = 2400;
+/** Fast enough to read as a rewind rather than a second pass over the names. */
+const REWIND_MS = 450;
+
+type Phase = "hold-top" | "down" | "hold-bottom" | "rewind";
+
+function easeOutCubic(t: number): number {
+  return 1 - Math.pow(1 - t, 3);
+}
 
 /**
- * Walk a scroll container down and back up, forever.
+ * Walk a scroll container to the bottom, then rewind to the top and go again.
  *
- * The standings hold 70 students but a projector shows about 20 rows, so the
- * back half of the room would never see themselves. This carries them past on
- * a loop instead of asking anyone to touch a trackpad. Reverses at the ends
- * rather than jumping, because a jump reads as a glitch from across a room.
+ * The standings hold seventy students but a projector shows about twenty rows,
+ * so the back half of the room would never see themselves. This carries them
+ * past on a loop instead of asking anyone to touch a trackpad. The return trip
+ * is a fast eased rewind rather than a slow scroll back: reading the list
+ * upwards is not useful, and a hard jump reads as a glitch from across a room.
+ *
+ * The position is accumulated in a local rather than read back from the
+ * element: at this speed a frame advances well under a pixel, and assigning a
+ * sub-pixel `scrollTop` gets rounded away, so reading it back each frame would
+ * lose every increment and the list would never move at all.
  */
 export function useAutoScroll(ref: React.RefObject<HTMLElement | null>, enabled: boolean): void {
   useEffect(() => {
@@ -18,8 +32,10 @@ export function useAutoScroll(ref: React.RefObject<HTMLElement | null>, enabled:
     if (window.matchMedia("(prefers-reduced-motion: reduce)").matches) return;
 
     let frame = 0;
-    let direction: 1 | -1 = 1;
-    let pausedUntil = performance.now() + PAUSE_MS;
+    let phase: Phase = "hold-top";
+    let phaseStart = performance.now();
+    let rewindFrom = 0;
+    let position = el.scrollTop;
     let last = performance.now();
 
     const step = (now: number) => {
@@ -27,21 +43,48 @@ export function useAutoScroll(ref: React.RefObject<HTMLElement | null>, enabled:
       const dt = now - last;
       last = now;
 
+      // Rows come and go, so the travel distance is re-read every frame.
       const overflow = el.scrollHeight - el.clientHeight;
       if (overflow <= 1) return; // everyone already fits
-      if (now < pausedUntil) return;
+      position = Math.min(position, overflow);
 
-      el.scrollTop += (direction * SPEED_PX_PER_SEC * dt) / 1000;
+      switch (phase) {
+        case "hold-top":
+          if (now - phaseStart >= PAUSE_MS) {
+            phase = "down";
+          }
+          break;
 
-      if (direction === 1 && el.scrollTop >= overflow - 0.5) {
-        el.scrollTop = overflow;
-        direction = -1;
-        pausedUntil = now + PAUSE_MS;
-      } else if (direction === -1 && el.scrollTop <= 0.5) {
-        el.scrollTop = 0;
-        direction = 1;
-        pausedUntil = now + PAUSE_MS;
+        case "down":
+          position += (SPEED_PX_PER_SEC * dt) / 1000;
+          if (position >= overflow) {
+            position = overflow;
+            phase = "hold-bottom";
+            phaseStart = now;
+          }
+          break;
+
+        case "hold-bottom":
+          if (now - phaseStart >= PAUSE_MS) {
+            phase = "rewind";
+            phaseStart = now;
+            rewindFrom = position;
+          }
+          break;
+
+        case "rewind": {
+          const t = Math.min(1, (now - phaseStart) / REWIND_MS);
+          position = rewindFrom * (1 - easeOutCubic(t));
+          if (t >= 1) {
+            position = 0;
+            phase = "hold-top";
+            phaseStart = now;
+          }
+          break;
+        }
       }
+
+      el.scrollTop = position;
     };
 
     frame = requestAnimationFrame(step);

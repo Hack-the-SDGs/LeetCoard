@@ -5,7 +5,6 @@ import type { GroupStanding, TopMember } from "../../lib/types";
 interface Props {
   standings: GroupStanding[];
   connected: boolean;
-  openCount: number;
 }
 
 const SETTLE = { type: "tween", ease: [0.2, 0, 0, 1], duration: 0.42 } as const;
@@ -18,7 +17,7 @@ const SETTLE = { type: "tween", ease: [0.2, 0, 0, 1], duration: 0.42 } as const;
  * teams at all — it is visible from the back of the room without reading a
  * single number.
  */
-export default function TeamBar({ standings, connected, openCount }: Props) {
+export default function TeamBar({ standings, connected }: Props) {
   return (
     <header className="rule-b relative z-30 flex items-stretch gap-8 bg-ink-900 px-5 py-2.5">
       <div className="flex shrink-0 flex-col justify-center">
@@ -58,7 +57,9 @@ export default function TeamBar({ standings, connected, openCount }: Props) {
                 <span className="tnum font-display text-[28px] font-bold leading-none">
                   {team.score}
                 </span>
-                <div className="flex items-center gap-1 pb-[3px]">
+                {/* Below xl a team slot is narrower than score + three
+                    portraits, and they start overlapping the next team. */}
+                <div className="hidden items-center gap-1 pb-[3px] xl:flex">
                   {team.top_members.map((member) => (
                     <Contributor key={member.username} member={member} color={team.color} />
                   ))}
@@ -87,7 +88,6 @@ export default function TeamBar({ standings, connected, openCount }: Props) {
             {connected ? "LIVE" : "離線"}
           </span>
         </div>
-        <span className="tnum font-mono text-[10px] text-paper-faint">{openCount} 題開放中</span>
       </div>
     </header>
   );

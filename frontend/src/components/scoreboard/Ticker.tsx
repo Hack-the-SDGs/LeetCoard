@@ -35,7 +35,7 @@ export default function Ticker({ events, colors }: Props) {
           還沒有提交紀錄。
         </p>
       ) : (
-        <div className="flex min-w-0 flex-1 items-stretch">
+        <div className="flex min-w-0 flex-1 items-stretch overflow-hidden">
           <AnimatePresence initial={false}>
             {visible.map((event) => (
               <motion.div
@@ -49,11 +49,13 @@ export default function Ticker({ events, colors }: Props) {
               >
                 <Verdict event={event} color={teamColor(event.group_id, colors)} />
                 <div className="min-w-0 flex-1">
+                  {/* The real name never gives up width; the handle is the one
+                      that shortens when the strip gets tight. */}
                   <div className="flex min-w-0 items-baseline gap-1.5">
-                    <span className="truncate text-[13px] font-bold leading-tight">
+                    <span className="shrink-0 whitespace-nowrap text-[13px] font-bold leading-tight">
                       {event.nickname}
                     </span>
-                    <span className="truncate font-mono text-[10px] leading-tight text-paper-faint">
+                    <span className="min-w-0 truncate font-mono text-[10px] leading-tight text-paper-faint">
                       {event.username}
                     </span>
                   </div>

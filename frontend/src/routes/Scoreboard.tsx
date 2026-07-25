@@ -41,15 +41,10 @@ export default function Scoreboard() {
 
   const colors = teamColors(snapshot.groups);
   const maxPoints = maxAvailablePoints(snapshot.problems);
-  const openCount = snapshot.problems.filter((p) => p.is_open).length;
 
   return (
     <div className="flex h-screen w-screen flex-col overflow-hidden">
-      <TeamBar
-        standings={snapshot.group_leaderboard}
-        connected={conn.connected}
-        openCount={openCount}
-      />
+      <TeamBar standings={snapshot.group_leaderboard} connected={conn.connected} />
       <main className="grid min-h-0 flex-1 grid-cols-[268px_minmax(0,1fr)]">
         <Standings rows={snapshot.leaderboard} colors={colors} maxPoints={maxPoints} />
         <ProblemStack problems={snapshot.problems} colors={colors} />

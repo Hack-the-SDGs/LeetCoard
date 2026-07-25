@@ -1,8 +1,7 @@
 import { useState } from "react";
-import { motion } from "framer-motion";
-import DifficultyMark from "../ui/DifficultyMark";
-import PercentileTrack from "./PercentileTrack";
-import type { TeamColors } from "../../lib/color";
+import { AnimatePresence, motion } from "framer-motion";
+import ProblemPodium from "./ProblemPodium";
+import { teamColor, type TeamColors } from "../../lib/color";
 import type { ProblemPayload } from "../../lib/types";
 
 interface Props {
@@ -11,14 +10,15 @@ interface Props {
 }
 
 const SETTLE = { type: "tween", ease: [0.2, 0, 0, 1], duration: 0.42 } as const;
+const REVEAL = { type: "tween", ease: [0.2, 0, 0, 1], duration: 0.34 } as const;
 
 /**
  * Open problems in full, closed ones folded to a line.
  *
  * A session accumulates closed problems, and a board that gave each of them a
- * full percentile track would push the live one off the screen within the hour.
- * Folding keeps the result — who solved it, who was fastest — one click from
- * the surface without spending the height.
+ * full podium would push the live one off the screen within the hour. The
+ * folded corner keeps the one thing worth carrying across the fold: whose team
+ * is on top of it.
  */
 export default function ProblemStack({ problems, colors }: Props) {
   const [expanded, setExpanded] = useState<Set<string>>(new Set());
@@ -39,107 +39,141 @@ export default function ProblemStack({ problems, colors }: Props) {
 
   return (
     <section className="flex min-h-0 flex-col bg-ink-950">
-      <div className="rule-b flex items-baseline justify-between px-4 py-1.5">
+      <div className="rule-b flex items-baseline justify-between px-5 py-1.5">
         <h2 className="font-mono text-[10px] tracking-label text-paper-dim">題目</h2>
         <span className="tnum font-mono text-[10px] text-paper-faint">
           {openCount} / {ordered.length} 開放
         </span>
       </div>
 
-      <div className="min-h-0 flex-1 overflow-y-auto">
+      {/* layoutScroll: framer measures in viewport coordinates, so without this
+          a scroll here reads as "every card moved" and it animates them back —
+          which also drags on unrelated layout components elsewhere. */}
+      <motion.div layoutScroll className="min-h-0 flex-1 overflow-y-auto">
         {ordered.length === 0 ? (
           <p className="px-5 py-16 text-center text-[14px] text-paper-faint">
             等待老師開放第一題。
           </p>
         ) : (
-          ordered.map((problem) =>
-            problem.is_open ? (
-              <motion.article
-                key={problem.title_slug}
-                layout
-                transition={SETTLE}
-                className="rule-b px-4 py-2.5"
-                style={{ borderLeft: "2px solid #F2EFE9" }}
-              >
-                <Heading problem={problem} />
-                <PercentileTrack solvers={problem.solvers} colors={colors} dimmed={false} />
-              </motion.article>
-            ) : (
-              <motion.article
-                key={problem.title_slug}
-                layout
-                transition={SETTLE}
-                className="rule-b px-4 py-2"
-                style={{ borderLeft: "2px solid transparent" }}
-              >
-                <button
-                  type="button"
-                  onClick={() => toggle(problem.title_slug)}
-                  aria-expanded={expanded.has(problem.title_slug)}
-                  className="flex w-full items-baseline gap-3 text-left"
-                >
-                  <Heading problem={problem} compact summary={<Summary problem={problem} />} />
-                </button>
-                {expanded.has(problem.title_slug) && (
-                  <PercentileTrack solvers={problem.solvers} colors={colors} dimmed />
-                )}
-              </motion.article>
-            ),
-          )
+          ordered.map((problem) => (
+            <ProblemCard
+              key={problem.title_slug}
+              problem={problem}
+              colors={colors}
+              expanded={expanded.has(problem.title_slug)}
+              onToggle={() => toggle(problem.title_slug)}
+            />
+          ))
         )}
-      </div>
+      </motion.div>
     </section>
   );
 }
 
-function Heading({
+function ProblemCard({
   problem,
-  compact,
-  summary,
+  colors,
+  expanded,
+  onToggle,
 }: {
   problem: ProblemPayload;
-  compact?: boolean;
-  summary?: React.ReactNode;
+  colors: TeamColors;
+  expanded: boolean;
+  onToggle: () => void;
 }) {
+  const leader = problem.solvers.find((s) => s.beat_pct != null) ?? problem.solvers[0];
+  const leaderColor = leader ? teamColor(leader.group_id, colors) : null;
+  const showPodium = problem.is_open || expanded;
+
+  const heading = <Heading problem={problem} compact={!problem.is_open} />;
+
   return (
-    <div className="flex w-full items-baseline gap-2.5">
+    <motion.article
+      // "position" only: animating size as well makes framer scale the card,
+      // which stretches the text inside it while a panel opens.
+      layout="position"
+      transition={SETTLE}
+      className={"rule-b relative " + (problem.is_open ? "px-5 py-3.5" : "px-5 py-2")}
+      style={{ borderLeft: `2px solid ${problem.is_open ? "#F2EFE9" : "transparent"}` }}
+    >
+      {leaderColor && <LeaderFold color={leaderColor} />}
+
+      {problem.is_open ? (
+        heading
+      ) : (
+        <button
+          type="button"
+          onClick={onToggle}
+          aria-expanded={expanded}
+          className="w-full text-left"
+        >
+          {heading}
+        </button>
+      )}
+
+      <AnimatePresence initial={false}>
+        {showPodium && (
+          <motion.div
+            key="podium"
+            initial={{ height: 0, opacity: 0 }}
+            animate={{ height: "auto", opacity: 1 }}
+            exit={{ height: 0, opacity: 0 }}
+            transition={REVEAL}
+            className="overflow-hidden"
+          >
+            <div className="pt-3">
+              <ProblemPodium
+                solvers={problem.solvers}
+                colors={colors}
+                dimmed={!problem.is_open}
+              />
+            </div>
+          </motion.div>
+        )}
+      </AnimatePresence>
+    </motion.article>
+  );
+}
+
+/** Folded corner in the leading team's colour — the one signal that survives
+ *  the card being collapsed. */
+function LeaderFold({ color }: { color: string }) {
+  return (
+    <span
+      aria-hidden="true"
+      className="absolute right-0 top-0 h-0 w-0"
+      style={{
+        borderLeft: "16px solid transparent",
+        borderTop: `16px solid ${color}`,
+      }}
+    />
+  );
+}
+
+function Heading({ problem, compact }: { problem: ProblemPayload; compact?: boolean }) {
+  return (
+    <div className="flex w-full items-baseline gap-3 pr-6">
       {/* Fixed width so #1 and #1768 put their titles on the same x. */}
       <span className="tnum w-[44px] shrink-0 text-right font-mono text-[12px] text-paper-faint">
         #{problem.frontend_id ?? "—"}
       </span>
+      {/* leading-tight, not leading-none: `truncate` clips a line box that
+          tight, and descenders on g/y/p lose their tails. */}
       <h3
         className={
-          "shrink-0 truncate font-display font-bold leading-none " +
-          (compact ? "text-[16px] text-paper-dim" : "text-[20px] text-paper")
+          "min-w-0 shrink truncate font-display font-bold leading-tight " +
+          (compact ? "text-[17px] text-paper-dim" : "text-[22px] text-paper")
         }
       >
         {problem.title ?? problem.title_slug}
       </h3>
-      <DifficultyMark difficulty={problem.difficulty} />
-      {compact && (
-        <span className="shrink-0 font-mono text-[9px] tracking-label text-paper-faint">已關閉</span>
-      )}
-      {summary}
-      <span className="tnum ml-auto shrink-0 font-display text-[15px] font-bold leading-none">
+      <span className="shrink-0 whitespace-nowrap text-[12px] leading-tight text-paper-faint">
+        共 <span className="tnum font-bold text-paper-dim">{problem.solvers.length}</span> 人已解出
+      </span>
+      <span className="tnum ml-auto shrink-0 font-display text-[16px] font-bold leading-tight">
         {problem.points}
         <span className="ml-1 font-mono text-[9px] font-normal text-paper-faint">PT</span>
       </span>
     </div>
-  );
-}
-
-function Summary({ problem }: { problem: ProblemPayload }) {
-  const best = problem.solvers.find((s) => s.beat_pct != null);
-  return (
-    <span className="min-w-0 truncate text-[11px] text-paper-faint">
-      <span className="tnum">{problem.solvers.length}</span> 人解出
-      {best && (
-        <>
-          <span className="mx-1.5">·</span>
-          最快 <span className="font-bold text-paper-dim">{best.nickname}</span>{" "}
-          <span className="tnum font-mono">{(best.beat_pct as number).toFixed(1)}</span>
-        </>
-      )}
-    </span>
   );
 }

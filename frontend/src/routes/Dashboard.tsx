@@ -56,10 +56,27 @@ function DashboardInner({ token, onLogout }: { token: string; onLogout: () => vo
   const { snapshot, conn } = useContestStream({ audience: "admin", token });
   const adminSnap = snapshot as AdminSnapshot | null;
 
+  // The stream stops retrying on 401 and waits for a new credential. Without
+  // this the console would sit on "正在載入" forever with a stale token.
+  useEffect(() => {
+    if (conn.unauthorized) onLogout();
+  }, [conn.unauthorized, onLogout]);
+
   if (!adminSnap) {
     return (
       <div className="flex h-screen w-screen items-center justify-center">
-        <span className="font-mono text-[12px] text-paper-faint">正在載入控制台</span>
+        <div className="text-center">
+          <p className="font-mono text-[12px] text-paper-faint">正在載入控制台</p>
+          <p className="mt-2 text-[12px] text-paper-faint">
+            {conn.error ? "連不上後端，重試中" : "等待第一份快照"}
+          </p>
+          <button
+            onClick={onLogout}
+            className="mt-5 rounded-sm border border-ink-600 px-3 py-1 text-[12px] hover:border-paper"
+          >
+            換一個 token
+          </button>
+        </div>
       </div>
     );
   }
