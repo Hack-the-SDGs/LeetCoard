@@ -1,26 +1,35 @@
-// Mirror of backend `_hash_color`. Same hue for the same username.
+import type { GroupPayload } from "./types";
 
-export function hashHue(username: string): number {
-  let h = 0;
-  for (let i = 0; i < username.length; i++) {
-    h = (h * 31 + username.charCodeAt(i)) >>> 0;
-  }
-  // SHA-1 first 6 hex would match exactly; this fallback is good enough for UI tint.
-  return h % 360;
+// Colour on this board means one thing only: which team you are on. Difficulty
+// is carried by weight instead (see DifficultyMark), which leaves the whole
+// wheel to the six teams and keeps the board readable without colour vision.
+
+export const UNASSIGNED_COLOR = "#5C646A";
+
+export type TeamColors = Map<number, string>;
+
+export function teamColors(groups: GroupPayload[]): TeamColors {
+  return new Map(groups.map((g) => [g.id, g.color]));
 }
 
-export function userColor(username: string, fallback?: string | null): string {
-  if (fallback) return fallback;
-  return `oklch(72% 0.18 ${hashHue(username)})`;
+export function teamColor(groupId: number | null | undefined, colors: TeamColors): string {
+  if (groupId == null) return UNASSIGNED_COLOR;
+  return colors.get(groupId) ?? UNASSIGNED_COLOR;
 }
 
-export function difficultyColor(diff: "easy" | "medium" | "hard"): string {
-  switch (diff) {
-    case "easy":
-      return "#34A853"; // g-green
-    case "medium":
-      return "#FBBC04"; // g-yellow
-    case "hard":
-      return "#EA4335"; // g-red
-  }
+/** Flat translucent wash of a team colour, for fills behind type. */
+export function teamWash(hex: string, alpha = 0.16): string {
+  const clean = hex.replace("#", "");
+  const full =
+    clean.length === 3
+      ? clean
+          .split("")
+          .map((c) => c + c)
+          .join("")
+      : clean;
+  const r = parseInt(full.slice(0, 2), 16);
+  const g = parseInt(full.slice(2, 4), 16);
+  const b = parseInt(full.slice(4, 6), 16);
+  if ([r, g, b].some(Number.isNaN)) return `rgba(242,239,233,${alpha})`;
+  return `rgba(${r}, ${g}, ${b}, ${alpha})`;
 }

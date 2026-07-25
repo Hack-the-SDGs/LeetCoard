@@ -1,5 +1,8 @@
 import { useState } from "react";
 import { api, ApiError } from "../../lib/api";
+import Avatar from "../ui/Avatar";
+import { Cross } from "../ui/icons";
+import { teamColor, teamColors } from "../../lib/color";
 import type { AdminSnapshot } from "../../lib/types";
 
 interface Props {
@@ -7,165 +10,177 @@ interface Props {
   token: string;
 }
 
-interface Row {
-  username: string;
-  student_id: string;
-  _key: string;
+interface BulkResult {
+  created: number;
+  updated: number;
+  errors: string[];
 }
 
-function makeRow(): Row {
-  return {
-    username: "",
-    student_id: "",
-    _key: `${Date.now()}-${Math.random().toString(36).slice(2, 6)}`,
-  };
-}
+const PLACEHOLDER = `xinshoutw,陳小明,1
+alice,王小華,1
+bob,李大十,2`;
 
-const EMPTY_ROWS = (): Row[] => [makeRow()];
+function errText(e: unknown): string {
+  return e instanceof ApiError ? `${e.status}: ${e.message}` : String(e);
+}
 
 export default function ParticipantsPanel({ snapshot, token }: Props) {
-  const locked = snapshot.status === "running" || snapshot.status === "ended";
-  const list = Object.values(snapshot.participants_admin);
-
-  const [rows, setRows] = useState<Row[]>(EMPTY_ROWS);
+  const [text, setText] = useState("");
   const [busy, setBusy] = useState(false);
-  const [msg, setMsg] = useState<{ ok: boolean; text: string } | null>(null);
+  const [msg, setMsg] = useState<string | null>(null);
+  const [errors, setErrors] = useState<string[]>([]);
 
-  const update = (i: number, patch: Partial<Row>) =>
-    setRows((current) => {
-      const next = current.map((r, idx) => (idx === i ? { ...r, ...patch } : r));
-      // Auto-grow: if the LAST row now has any content, append a fresh blank row.
-      const last = next[next.length - 1];
-      if (last && (last.username.trim() || last.student_id.trim())) {
-        next.push(makeRow());
-      }
-      return next;
-    });
-
-  const removeRow = (i: number) =>
-    setRows((current) => {
-      const next = current.filter((_, idx) => idx !== i);
-      return next.length ? next : EMPTY_ROWS();
-    });
+  const colors = teamColors(snapshot.groups);
+  const people = Object.values(snapshot.participants_admin).sort((a, b) => a.rank - b.rank);
+  const unassigned = people.filter((p) => p.group_id == null).length;
 
   const submit = async () => {
-    const filled = rows.filter((r) => r.username.trim() && r.student_id.trim());
-    if (filled.length === 0) return;
+    if (!text.trim()) return;
     setBusy(true);
     setMsg(null);
+    setErrors([]);
     try {
-      const text = filled
-        .map((r) => `${r.username.trim()},${r.student_id.trim()}`)
-        .join("\n");
-      const res = await api<{ ok: true; created: number; updated: number; errors: string[] }>(
-        "/api/admin/participants/bulk",
-        { method: "PUT", token, body: JSON.stringify({ text }) },
-      );
-      const errSummary = res.errors.length ? ` · ${res.errors.length} 行失敗` : "";
-      setMsg({
-        ok: true,
-        text: `新增 ${res.created} · 更新 ${res.updated}${errSummary}`,
+      const res = await api<BulkResult>("/api/admin/participants/bulk", {
+        method: "PUT",
+        token,
+        body: JSON.stringify({ text }),
       });
-      if (!res.errors.length) setRows(EMPTY_ROWS());
+      setMsg(`新增 ${res.created} 人，更新 ${res.updated} 人`);
+      setErrors(res.errors);
+      if (res.errors.length === 0) setText("");
     } catch (e) {
-      setMsg({ ok: false, text: e instanceof ApiError ? `${e.status}: ${e.message}` : String(e) });
+      setMsg(errText(e));
     }
     setBusy(false);
   };
 
+  const changeGroup = async (username: string, groupId: number | null) => {
+    setMsg(null);
+    try {
+      await api(`/api/admin/participants/${encodeURIComponent(username)}/group`, {
+        method: "PUT",
+        token,
+        body: JSON.stringify({ group_id: groupId }),
+      });
+    } catch (e) {
+      setMsg(errText(e));
+    }
+  };
+
   const remove = async (username: string) => {
+    if (!window.confirm(`把 ${username} 從名單移除？他的分數會一併消失。`)) return;
+    setMsg(null);
     try {
       await api(`/api/admin/participants/${encodeURIComponent(username)}`, {
         method: "DELETE",
         token,
       });
     } catch (e) {
-      setMsg({ ok: false, text: e instanceof ApiError ? `${e.status}: ${e.message}` : String(e) });
+      setMsg(errText(e));
     }
   };
 
   return (
-    <div className="surface rounded-3xl p-5 h-full flex flex-col min-h-0">
-      <div className="flex items-center justify-between mb-3 shrink-0">
-        <h2 className="font-bold text-lg">參賽者</h2>
-        <span className="text-[10px] text-ink-300">共 {list.length} 人</span>
+    <section className="flex h-full min-h-0 flex-col border border-ink-700 bg-ink-900">
+      <div className="rule-b flex items-baseline justify-between px-4 py-2">
+        <h2 className="font-mono text-[10px] tracking-label text-paper-dim">學員</h2>
+        <span className="tnum font-mono text-[10px] text-paper-faint">
+          {people.length} 人{unassigned > 0 ? ` · ${unassigned} 未分組` : ""}
+        </span>
       </div>
 
-      <div className="shrink-0 space-y-1 max-h-48 overflow-y-auto pr-1">
-        <div className="grid grid-cols-[1fr_1fr_24px] gap-2 text-[10px] text-ink-300 px-1">
-          <span>username</span>
-          <span>nickname</span>
-          <span></span>
+      <div className="rule-b p-3">
+        <label htmlFor="roster" className="font-mono text-[9px] tracking-label text-paper-faint">
+          貼上名單：USERNAME,姓名,組別
+        </label>
+        <textarea
+          id="roster"
+          value={text}
+          onChange={(e) => setText(e.target.value)}
+          rows={4}
+          spellCheck={false}
+          placeholder={PLACEHOLDER}
+          className="mt-1.5 w-full resize-y rounded-sm border border-ink-700 bg-ink-950 px-2 py-1.5 font-mono text-[12px] outline-none focus:border-paper"
+        />
+        <div className="mt-2 flex items-center gap-3">
+          <button
+            onClick={submit}
+            disabled={busy || !text.trim()}
+            className="rounded-sm bg-paper px-4 py-1.5 font-display text-[14px] font-bold text-ink-950 hover:brightness-95 disabled:opacity-40"
+          >
+            {busy ? "匯入中" : "匯入"}
+          </button>
+          <span className="text-[11px] text-paper-faint">組別欄可留空，留空不會動到原本的組別</span>
         </div>
-        {rows.map((r, i) => (
-          <div key={r._key} className="grid grid-cols-[1fr_1fr_24px] gap-2 items-center">
-            <input
-              value={r.username}
-              onChange={(e) => update(i, { username: e.target.value })}
-              disabled={locked}
-              placeholder={i === 0 ? "xinshoutw" : ""}
-              className="px-2 py-1 rounded bg-stage-900/50 border border-white/10 text-sm font-mono disabled:opacity-50"
-            />
-            <input
-              value={r.student_id}
-              onChange={(e) => update(i, { student_id: e.target.value })}
-              disabled={locked}
-              placeholder={i === 0 ? "B11315009" : ""}
-              className="px-2 py-1 rounded bg-stage-900/50 border border-white/10 text-sm font-mono disabled:opacity-50"
-            />
-            {(r.username || r.student_id) ? (
-              <button
-                onClick={() => removeRow(i)}
-                disabled={locked}
-                title="刪除此列"
-                className="text-ink-300 hover:text-g-red disabled:opacity-30"
-              >
-                ×
-              </button>
-            ) : (
-              <span />
-            )}
-          </div>
-        ))}
-      </div>
-
-      <div className="mt-3 flex items-center gap-2 shrink-0">
-        <button
-          onClick={submit}
-          disabled={busy || locked}
-          className="px-4 py-1.5 rounded bg-g-blue text-white text-sm font-bold disabled:opacity-50"
-        >
-          {busy ? "送出中…" : "新增 / 更新"}
-        </button>
-        {locked && <span className="text-[11px] text-g-yellow">比賽已開始，參賽者鎖定中</span>}
-        {msg && <span className={"text-xs " + (msg.ok ? "text-g-green" : "text-g-red")}>{msg.text}</span>}
-      </div>
-
-      <hr className="my-3 border-white/10 shrink-0" />
-
-      <div className="flex-1 min-h-0 overflow-y-auto pr-1">
-        {list.map((p) => (
-          <div key={p.username} className="flex items-center justify-between py-1 text-sm border-b border-white/5">
-            <div className="flex items-center gap-2 min-w-0 flex-1">
-              <span className="font-bold truncate">{p.username}</span>
-              <span className="text-ink-300 font-mono text-xs">{p.student_id}</span>
-            </div>
-            <span className="font-mono tabular text-xs text-ink-300">#{p.rank} · {p.score}pt</span>
-            {!locked && (
-              <button
-                onClick={() => remove(p.username)}
-                className="ml-2 text-ink-300 hover:text-g-red"
-                title="刪除"
-              >
-                ×
-              </button>
-            )}
-          </div>
-        ))}
-        {!list.length && (
-          <div className="text-center text-ink-300 text-sm py-6">尚未新增參賽者</div>
+        {msg && <p className="mt-2 text-[12px] text-paper-dim">{msg}</p>}
+        {errors.length > 0 && (
+          <ul className="mt-1 space-y-0.5">
+            {errors.map((e) => (
+              <li key={e} className="font-mono text-[11px] text-paper-dim">
+                {e}
+              </li>
+            ))}
+          </ul>
         )}
       </div>
-    </div>
+
+      <div className="min-h-0 flex-1 overflow-y-auto">
+        {people.length === 0 ? (
+          <p className="px-4 py-8 text-center text-[13px] text-paper-faint">
+            名單是空的。貼上一份就可以開始。
+          </p>
+        ) : (
+          people.map((person) => (
+            <div
+              key={person.username}
+              className="grid grid-cols-[22px_auto_minmax(0,1fr)_78px_46px_16px] items-center gap-2 border-b border-ink-800 px-3 py-1.5"
+            >
+              <span className="tnum text-right font-mono text-[11px] text-paper-faint">
+                {person.rank}
+              </span>
+              <Avatar
+                nickname={person.nickname}
+                avatarUrl={person.avatar_url}
+                color={teamColor(person.group_id, colors)}
+                size={20}
+              />
+              <div className="min-w-0">
+                <div className="truncate text-[13px] font-bold leading-tight">
+                  {person.nickname}
+                </div>
+                <div className="truncate font-mono text-[10px] leading-tight text-paper-faint">
+                  {person.username}
+                </div>
+              </div>
+              <select
+                value={person.group_id ?? ""}
+                aria-label={`${person.nickname} 的組別`}
+                onChange={(e) =>
+                  changeGroup(person.username, e.target.value === "" ? null : Number(e.target.value))
+                }
+                className="w-full rounded-sm border border-ink-700 bg-ink-950 px-1 py-1 text-[12px] outline-none focus:border-paper"
+              >
+                <option value="">未分組</option>
+                {snapshot.groups.map((g) => (
+                  <option key={g.id} value={g.id}>
+                    {g.name}
+                  </option>
+                ))}
+              </select>
+              <span className="tnum text-right font-display text-[15px] font-bold">
+                {person.score}
+              </span>
+              <button
+                onClick={() => remove(person.username)}
+                title={`移除 ${person.nickname}`}
+                className="text-paper-faint hover:text-paper"
+              >
+                <Cross />
+              </button>
+            </div>
+          ))
+        )}
+      </div>
+    </section>
   );
 }

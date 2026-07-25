@@ -2,7 +2,7 @@ import { useEffect, useState } from "react";
 import { api, ApiError } from "../lib/api";
 import { useContestStream } from "../hooks/useContestStream";
 import Login from "../components/dashboard/Login";
-import ContestPanel from "../components/dashboard/ContestPanel";
+import PracticePanel from "../components/dashboard/PracticePanel";
 import ProblemsPanel from "../components/dashboard/ProblemsPanel";
 import ParticipantsPanel from "../components/dashboard/ParticipantsPanel";
 import EventsPanel from "../components/dashboard/EventsPanel";
@@ -14,7 +14,6 @@ export default function Dashboard() {
   const [token, setToken] = useState<string | null>(() => localStorage.getItem(TOKEN_KEY));
   const [authError, setAuthError] = useState<string | null>(null);
 
-  // Auth check on mount / token change
   useEffect(() => {
     if (!token) return;
     api<{ ok: true }>("/api/admin/auth/check", { token })
@@ -23,7 +22,7 @@ export default function Dashboard() {
         if (e.status === 401) {
           setToken(null);
           localStorage.removeItem(TOKEN_KEY);
-          setAuthError("Token 無效，請重新登入");
+          setAuthError("Token 不正確，再試一次。");
         }
       });
   }, [token]);
@@ -41,10 +40,15 @@ export default function Dashboard() {
     );
   }
 
-  return <DashboardInner token={token} onLogout={() => {
-    localStorage.removeItem(TOKEN_KEY);
-    setToken(null);
-  }} />;
+  return (
+    <DashboardInner
+      token={token}
+      onLogout={() => {
+        localStorage.removeItem(TOKEN_KEY);
+        setToken(null);
+      }}
+    />
+  );
 }
 
 function DashboardInner({ token, onLogout }: { token: string; onLogout: () => void }) {
@@ -53,42 +57,56 @@ function DashboardInner({ token, onLogout }: { token: string; onLogout: () => vo
 
   if (!adminSnap) {
     return (
-      <div className="w-screen h-screen flex items-center justify-center text-ink-300">
-        正在載入 dashboard…
+      <div className="flex h-screen w-screen items-center justify-center">
+        <span className="font-mono text-[12px] text-paper-faint">正在載入控制台</span>
       </div>
     );
   }
 
   return (
-    <div className="w-screen h-screen flex flex-col stage-grid p-5 gap-4">
-      <header className="flex items-center justify-between surface rounded-2xl px-6 py-3 shrink-0">
-        <div>
-          <h1 className="text-xl font-black">控制中心</h1>
+    <div className="flex h-screen flex-col gap-3 overflow-hidden p-3">
+      <header className="flex shrink-0 items-center justify-between border border-ink-700 bg-ink-900 px-4 py-2.5">
+        <div className="flex items-baseline gap-3">
+          <span className="font-display text-[18px] font-bold leading-none tracking-label">
+            LEETCOARD
+          </span>
+          <span className="font-mono text-[9px] tracking-label text-paper-faint">控制台</span>
         </div>
         <div className="flex items-center gap-4">
-          <span className={"text-xs px-2 py-1 rounded font-mono " + (conn.connected ? "bg-g-green/20 text-g-green" : "bg-g-red/20 text-g-red")}>
-            {conn.connected ? "CONNECTED" : "OFFLINE"}
+          <span className="flex items-center gap-2 font-mono text-[10px] tracking-label">
+            <span
+              className="h-2 w-2"
+              style={{
+                background: conn.connected ? "#F2EFE9" : "transparent",
+                boxShadow: `inset 0 0 0 1px ${conn.connected ? "#F2EFE9" : "#5C646A"}`,
+              }}
+            />
+            {conn.connected ? "LIVE" : "離線"}
           </span>
           <button
             onClick={onLogout}
-            className="text-xs px-3 py-1.5 rounded bg-stage-700 hover:bg-stage-600 text-ink-200"
-          >登出</button>
+            className="rounded-sm border border-ink-600 px-3 py-1 text-[12px] hover:border-paper"
+          >
+            登出
+          </button>
         </div>
       </header>
 
-      <div className="flex-1 grid grid-cols-12 grid-rows-2 gap-4 min-h-0">
-        <section className="col-span-12 lg:col-span-4 lg:col-start-1 lg:row-start-1 lg:row-span-1 min-h-0">
-          <ContestPanel snapshot={adminSnap} token={token} />
-        </section>
-        <section className="col-span-12 lg:col-span-4 lg:col-start-1 lg:row-start-2 lg:row-span-1 min-h-0">
+      {/* Below xl the console stacks and the page itself scrolls; from xl up
+          every panel is a fixed pane that scrolls its own contents. */}
+      <div className="grid min-h-0 flex-1 auto-rows-[minmax(320px,auto)] gap-3 overflow-y-auto xl:auto-rows-auto xl:grid-cols-[320px_minmax(0,1fr)_minmax(0,1fr)] xl:grid-rows-[minmax(0,1fr)_minmax(0,1fr)] xl:overflow-hidden">
+        <div className="min-h-0 xl:row-span-2">
+          <PracticePanel snapshot={adminSnap} token={token} />
+        </div>
+        <div className="min-h-0 xl:row-span-2">
           <ProblemsPanel snapshot={adminSnap} token={token} />
-        </section>
-        <section className="col-span-12 lg:col-span-4 lg:col-start-5 lg:row-start-1 lg:row-span-2 min-h-0">
-          <EventsPanel snapshot={adminSnap} />
-        </section>
-        <section className="col-span-12 lg:col-span-4 lg:col-start-9 lg:row-start-1 lg:row-span-2 min-h-0">
+        </div>
+        <div className="min-h-0">
           <ParticipantsPanel snapshot={adminSnap} token={token} />
-        </section>
+        </div>
+        <div className="min-h-0">
+          <EventsPanel snapshot={adminSnap} />
+        </div>
       </div>
     </div>
   );

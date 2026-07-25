@@ -1,65 +1,45 @@
 import type { Config } from "tailwindcss";
 
-// GDG / Google brand palette — cool blue dominant, warm accents for highlights.
+// Instrument palette, not a dashboard palette.
+//
+// The chrome is deliberately achromatic: cool graphite surfaces, warm paper
+// type. Every saturated colour on the board belongs to a team, so nothing
+// competes with team identity for attention. Difficulty is encoded by weight
+// (plain / outlined / filled) rather than by hue, which keeps the whole colour
+// wheel free for the six teams and survives colour-blind viewers.
 const config: Config = {
   content: ["./index.html", "./src/**/*.{ts,tsx}"],
   theme: {
     extend: {
       colors: {
-        // Google brand
-        "g-blue":   "#4285F4",
-        "g-red":    "#EA4335",
-        "g-yellow": "#FBBC04",
-        "g-green":  "#34A853",
-        // GDG dark stage colours (deep navy + glass surfaces)
-        stage: {
-          900: "#070b1f",
-          800: "#0d1330",
-          700: "#141b3d",
-          600: "#1c244e",
-          500: "#252e62",
-        },
         ink: {
-          100: "#f4f6ff",
-          200: "#cdd4ee",
-          300: "#9aa3c7",
-          400: "#5e6896",
+          950: "#0E1113", // page ground
+          900: "#14181B", // panel
+          850: "#181D21", // row stripe
+          800: "#1B2024", // raised
+          700: "#262C31", // hairline
+          600: "#363E44", // hairline, emphasised
+        },
+        paper: {
+          DEFAULT: "#F2EFE9", // warm off-white against the cool ground
+          dim: "#9AA1A6",
+          faint: "#5C646A",
         },
       },
       fontFamily: {
-        display: [
-          "Google Sans",
-          "Product Sans",
-          "Inter",
-          "ui-sans-serif",
-          "system-ui",
-          "sans-serif",
-        ],
-        mono: ["JetBrains Mono", "Roboto Mono", "ui-monospace", "monospace"],
+        // Condensed industrial face for numbers and labels; the Chinese fallback
+        // carries real names, which Barlow has no glyphs for.
+        display: ['"Barlow Condensed"', '"Noto Sans TC"', "system-ui", "sans-serif"],
+        sans: ['"Noto Sans TC"', '"Barlow Condensed"', "system-ui", "sans-serif"],
+        // Verdict codes (AC / WA / TLE) are already a code vocabulary.
+        mono: ['"JetBrains Mono"', "ui-monospace", "monospace"],
       },
-      boxShadow: {
-        glow: "0 0 32px rgba(66,133,244,0.45)",
-        "glow-warm": "0 0 32px rgba(251,188,4,0.45)",
-        "glow-green": "0 0 32px rgba(52,168,83,0.45)",
+      letterSpacing: {
+        label: "0.22em",
       },
-      keyframes: {
-        idleBob: {
-          "0%,100%": { transform: "translateY(0px)" },
-          "50%": { transform: "translateY(-3px)" },
-        },
-        floorScroll: {
-          "0%": { backgroundPositionY: "0px" },
-          "100%": { backgroundPositionY: "120px" },
-        },
-        ringPulse: {
-          "0%": { boxShadow: "0 0 0 0 rgba(66,133,244,0.6)" },
-          "100%": { boxShadow: "0 0 0 18px rgba(66,133,244,0)" },
-        },
-      },
-      animation: {
-        "idle-bob": "idleBob 1.6s ease-in-out infinite",
-        "floor-scroll": "floorScroll 4s linear infinite",
-        "ring-pulse": "ringPulse 1.4s ease-out infinite",
+      transitionTimingFunction: {
+        // Fast out, settle in — reads as a mechanism moving, not a spring.
+        instrument: "cubic-bezier(0.2, 0, 0, 1)",
       },
     },
   },

@@ -83,6 +83,40 @@ class ContestEngine:
     def contest(self) -> Contest:
         return self._store.contest
 
+    def _solvers_for(self, slug: str) -> List[dict]:
+        """Everyone who has solved `slug`, best runtime first.
+
+        The board plots these on a 0–100 percentile track, so the numbers have
+        to come from the participant record rather than the event log — events
+        are capped at 500 and a long session would quietly erase the early
+        problems' percentiles.
+        """
+        rows: List[dict] = []
+        for p in self.contest.participants.values():
+            if slug not in p.solved_problems:
+                continue
+            solved_at = p.problem_first_ac_at.get(slug)
+            rows.append(
+                {
+                    "username": p.username,
+                    "nickname": p.nickname,
+                    "group_id": p.group_id,
+                    "avatar_url": p.avatar_url,
+                    "beat_pct": p.problem_best_beat_pct.get(slug),
+                    "solved_at": solved_at.isoformat() if solved_at else None,
+                    "submission_id": p.problem_best_submission_id.get(slug),
+                }
+            )
+        # Fastest runtime leads; unknown percentiles sink to the end.
+        rows.sort(
+            key=lambda r: (
+                -(r["beat_pct"] if r["beat_pct"] is not None else -1.0),
+                r["solved_at"] or "",
+                r["username"],
+            )
+        )
+        return rows
+
     def _problems_for_audience(self, audience: str) -> List[dict]:
         """Admins see every problem; the public board only sees problems that
         have been opened at least once, so an unopened set can't be previewed
@@ -90,7 +124,12 @@ class ContestEngine:
         sorted_probs = sorted(self.contest.problems, key=lambda p: p.order)
         if audience != "admin":
             sorted_probs = [p for p in sorted_probs if p.was_opened]
-        return [p.model_dump(mode="json") for p in sorted_probs]
+        out: List[dict] = []
+        for p in sorted_probs:
+            payload = p.model_dump(mode="json")
+            payload["solvers"] = self._solvers_for(p.title_slug)
+            out.append(payload)
+        return out
 
     def snapshot_dict(self, audience: str = "public") -> dict:
         """Full state for new SSE subscribers."""
@@ -585,6 +624,10 @@ class ContestEngine:
 
             tracked = {p.title_slug: p for p in self.contest.problems}
             new_events: List[SubmissionEvent] = []
+            # Set when a percentile track needs redrawing: a new solver, or an
+            # existing one shaving their runtime. A faster run inside the same
+            # bonus tier awards nothing but still slides the marker right.
+            board_changed = False
 
             for sub in raw_submissions:
                 sub_id = str(sub.get("id") or "")
@@ -626,6 +669,7 @@ class ContestEngine:
                         if slug not in participant.solved_problems:
                             # First AC inside the window — base points + bonus.
                             is_scoring = True
+                            board_changed = True
                             bonus_delta = new_bonus
                             points_delta = problem.points + bonus_delta
                             participant.solved_problems.add(slug)
@@ -645,6 +689,7 @@ class ContestEngine:
                             ):
                                 participant.problem_best_beat_pct[slug] = beat_pct
                                 participant.problem_best_submission_id[slug] = sub_id
+                                board_changed = True
                             old_bonus = participant.problem_bonus_pts.get(slug, 0)
                             if new_bonus > old_bonus:
                                 is_scoring = True
@@ -689,6 +734,8 @@ class ContestEngine:
             self._bc.broadcast("submission_event", evt.model_dump(mode="json"))
         if any(e.is_scoring for e in new_events):
             self._push_leaderboard()
+        if board_changed:
+            self._broadcast_problems()
         return newly_seen
 
     # -------- helpers used by routes / workers --------

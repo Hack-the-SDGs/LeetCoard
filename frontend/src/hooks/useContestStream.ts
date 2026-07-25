@@ -2,8 +2,11 @@ import { useEffect, useReducer, useRef } from "react";
 import { API_BASE, streamUrl } from "../lib/api";
 import type {
   AdminSnapshot,
+  GroupPayload,
+  GroupStanding,
   LeaderboardRow,
   ParticipantAdminPayload,
+  ProblemPayload,
   PublicSnapshot,
   SubmissionEventPayload,
 } from "../lib/types";
@@ -19,11 +22,10 @@ type Snapshot = PublicSnapshot | AdminSnapshot;
 
 type Action =
   | { type: "snapshot"; snapshot: Snapshot }
-  | { type: "leaderboard"; leaderboard: LeaderboardRow[] }
+  | { type: "leaderboard"; leaderboard: LeaderboardRow[]; groupLeaderboard: GroupStanding[] }
   | { type: "submission_event"; event: SubmissionEventPayload }
-  | { type: "contest_status"; status: PublicSnapshot["status"]; start: string | null; end: string | null }
-  | { type: "times"; start: string | null; end: string | null }
-  | { type: "problems"; problems: PublicSnapshot["problems"] }
+  | { type: "problems"; problems: ProblemPayload[] }
+  | { type: "groups"; groups: GroupPayload[] }
   | { type: "participants_admin"; participants: Record<string, ParticipantAdminPayload> }
   | { type: "reset"; snapshot: Snapshot }
   | { type: "conn"; conn: Partial<ConnState> };
@@ -41,34 +43,33 @@ const initial: State = {
 function reducer(state: State, action: Action): State {
   switch (action.type) {
     case "snapshot":
-      return { ...state, snapshot: action.snapshot, conn: { ...state.conn, serverNow: action.snapshot.server_time } };
+      return {
+        ...state,
+        snapshot: action.snapshot,
+        conn: { ...state.conn, serverNow: action.snapshot.server_time },
+      };
     case "leaderboard":
-      if (!state.snapshot) return state;
-      return { ...state, snapshot: { ...state.snapshot, leaderboard: action.leaderboard } };
-    case "submission_event": {
-      if (!state.snapshot) return state;
-      const events = [...state.snapshot.events, action.event].slice(-200);
-      return { ...state, snapshot: { ...state.snapshot, events } };
-    }
-    case "contest_status": {
       if (!state.snapshot) return state;
       return {
         ...state,
         snapshot: {
           ...state.snapshot,
-          status: action.status,
-          start_time: action.start,
-          end_time: action.end,
+          leaderboard: action.leaderboard,
+          group_leaderboard: action.groupLeaderboard ?? state.snapshot.group_leaderboard,
         },
       };
-    }
-    case "times": {
+    case "submission_event": {
       if (!state.snapshot) return state;
-      return { ...state, snapshot: { ...state.snapshot, start_time: action.start, end_time: action.end } };
+      const events = [...state.snapshot.events, action.event].slice(-200);
+      return { ...state, snapshot: { ...state.snapshot, events } };
     }
     case "problems": {
       if (!state.snapshot) return state;
       return { ...state, snapshot: { ...state.snapshot, problems: action.problems } };
+    }
+    case "groups": {
+      if (!state.snapshot) return state;
+      return { ...state, snapshot: { ...state.snapshot, groups: action.groups } };
     }
     case "participants_admin": {
       if (!state.snapshot) return state;
@@ -133,23 +134,23 @@ export function useContestStream(opts: UseStreamOpts) {
         dispatch({ type: "snapshot", snapshot: JSON.parse((e as MessageEvent).data) }),
       );
       es.addEventListener("leaderboard_update", (e) => {
-        const { leaderboard } = JSON.parse((e as MessageEvent).data);
-        dispatch({ type: "leaderboard", leaderboard });
+        const d = JSON.parse((e as MessageEvent).data);
+        dispatch({
+          type: "leaderboard",
+          leaderboard: d.leaderboard,
+          groupLeaderboard: d.group_leaderboard,
+        });
       });
       es.addEventListener("submission_event", (e) =>
         dispatch({ type: "submission_event", event: JSON.parse((e as MessageEvent).data) }),
       );
-      es.addEventListener("contest_status", (e) => {
-        const d = JSON.parse((e as MessageEvent).data);
-        dispatch({ type: "contest_status", status: d.status, start: d.start_time, end: d.end_time });
-      });
-      es.addEventListener("times_updated", (e) => {
-        const d = JSON.parse((e as MessageEvent).data);
-        dispatch({ type: "times", start: d.start_time, end: d.end_time });
-      });
       es.addEventListener("problems_updated", (e) => {
         const d = JSON.parse((e as MessageEvent).data);
         dispatch({ type: "problems", problems: d.problems });
+      });
+      es.addEventListener("groups_updated", (e) => {
+        const d = JSON.parse((e as MessageEvent).data);
+        dispatch({ type: "groups", groups: d.groups });
       });
       es.addEventListener("participants_updated", (e) => {
         const d = JSON.parse((e as MessageEvent).data);

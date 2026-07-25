@@ -2,21 +2,26 @@ import { useEffect, useRef, useState } from "react";
 import { createPortal } from "react-dom";
 import { api, ApiError } from "../../lib/api";
 import { getProblemDetail, searchProblems } from "../../lib/leetcode";
-import type { AdminSnapshot, BonusTier, ProblemPayload } from "../../lib/types";
-import { difficultyColor } from "../../lib/color";
+import DifficultyMark from "../ui/DifficultyMark";
+import Switch from "../ui/Switch";
+import { Cross, DragHandle, Plus } from "../ui/icons";
+import type { AdminSnapshot, BonusTier, Difficulty, ProblemPayload } from "../../lib/types";
 
 interface Props {
   snapshot: AdminSnapshot;
   token: string;
 }
 
-interface Draft extends ProblemPayload {
-  _key: string;
-  _open: boolean;
+interface Draft {
+  title_slug: string;
+  title: string | null;
+  frontend_id: string | null;
+  difficulty: Difficulty;
+  points: number;
   beat_bonus_tiers: BonusTier[];
+  key: string;
+  expanded: boolean;
 }
-
-type Difficulty = ProblemPayload["difficulty"];
 
 interface DifficultyDefaults {
   points: number;
@@ -50,41 +55,58 @@ const DIFFICULTY_DEFAULTS: Record<Difficulty, DifficultyDefaults> = {
   },
 };
 
-function defaultsFor(diff: Difficulty): DifficultyDefaults {
-  const d = DIFFICULTY_DEFAULTS[diff];
+function defaultsFor(difficulty: Difficulty): DifficultyDefaults {
+  const d = DIFFICULTY_DEFAULTS[difficulty];
   return { points: d.points, tiers: d.tiers.map((t) => ({ ...t })) };
 }
 
-function toDraft(p: ProblemPayload, i: number): Draft {
+function toDraft(p: ProblemPayload, index: number): Draft {
   return {
-    ...p,
+    title_slug: p.title_slug,
+    title: p.title ?? null,
+    frontend_id: p.frontend_id ?? null,
+    difficulty: p.difficulty,
+    points: p.points,
     beat_bonus_tiers: p.beat_bonus_tiers ?? [],
-    _key: `${p.title_slug}-${i}`,
-    _open: false,
+    key: `${p.title_slug}-${index}`,
+    expanded: false,
   };
 }
 
-function newRow(order: number): Draft {
+function newRow(): Draft {
   const defaults = defaultsFor("easy");
   return {
     title_slug: "",
     title: null,
+    frontend_id: null,
     difficulty: "easy",
     points: defaults.points,
-    order,
     beat_bonus_tiers: defaults.tiers,
-    _key: `new-${Date.now()}-${Math.random().toString(36).slice(2, 6)}`,
-    _open: false,
+    key: `new-${Math.random().toString(36).slice(2, 8)}`,
+    expanded: false,
   };
 }
 
 export default function ProblemsPanel({ snapshot, token }: Props) {
-  const locked = snapshot.status === "running" || snapshot.status === "ended";
   const [draft, setDraft] = useState<Draft[]>(() => snapshot.problems.map(toDraft));
   const [busy, setBusy] = useState(false);
-  const [msg, setMsg] = useState<{ ok: boolean; text: string } | null>(null);
+  const [toggling, setToggling] = useState<string | null>(null);
+  const [msg, setMsg] = useState<string | null>(null);
   const [dragIdx, setDragIdx] = useState<number | null>(null);
-  const [dragOverIdx, setDragOverIdx] = useState<number | null>(null);
+  const [dropIdx, setDropIdx] = useState<number | null>(null);
+
+  // Re-seed only when the problem *set* changes. Flipping a switch broadcasts
+  // problems_updated too, and that must not wipe a half-typed row.
+  const slugKey = snapshot.problems.map((p) => p.title_slug).join("|");
+  useEffect(() => {
+    setDraft(snapshot.problems.map(toDraft));
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [slugKey]);
+
+  const openBySlug = new Map(snapshot.problems.map((p) => [p.title_slug, p.is_open]));
+
+  const update = (i: number, patch: Partial<Draft>) =>
+    setDraft((d) => d.map((row, idx) => (idx === i ? { ...row, ...patch } : row)));
 
   const moveRow = (from: number, to: number) => {
     if (from === to) return;
@@ -96,76 +118,37 @@ export default function ProblemsPanel({ snapshot, token }: Props) {
     });
   };
 
-  useEffect(() => {
-    setDraft(snapshot.problems.map(toDraft));
-  }, [snapshot.problems]);
-
-  const update = (i: number, patch: Partial<Draft>) =>
-    setDraft((d) => d.map((p, idx) => (idx === i ? { ...p, ...patch } : p)));
-
-  const applyDifficulty = (i: number, next: Difficulty) => {
-    const defaults = defaultsFor(next);
-    setDraft((d) =>
-      d.map((p, idx) =>
-        idx === i
-          ? { ...p, difficulty: next, points: defaults.points, beat_bonus_tiers: defaults.tiers }
-          : p,
-      ),
-    );
-  };
-
-  const addRow = () => setDraft((d) => [...d, newRow(d.length)]);
-
-  const delRow = (i: number) => setDraft((d) => d.filter((_, idx) => idx !== i));
-
-  const toggleOpen = (i: number) =>
-    setDraft((d) => d.map((p, idx) => (idx === i ? { ...p, _open: !p._open } : p)));
-
-  const addTier = (i: number) =>
-    setDraft((d) =>
-      d.map((p, idx) =>
-        idx === i
-          ? { ...p, beat_bonus_tiers: [...p.beat_bonus_tiers, { min_beat_pct: 50, bonus_pts: 1 }] }
-          : p,
-      ),
-    );
-
-  const removeTier = (i: number, ti: number) =>
-    setDraft((d) =>
-      d.map((p, idx) =>
-        idx === i
-          ? { ...p, beat_bonus_tiers: p.beat_bonus_tiers.filter((_, tidx) => tidx !== ti) }
-          : p,
-      ),
-    );
-
-  const updateTier = (i: number, ti: number, patch: Partial<BonusTier>) =>
-    setDraft((d) =>
-      d.map((p, idx) =>
-        idx === i
-          ? {
-              ...p,
-              beat_bonus_tiers: p.beat_bonus_tiers.map((t, tidx) =>
-                tidx === ti ? { ...t, ...patch } : t,
-              ),
-            }
-          : p,
-      ),
-    );
-
   const onPick = async (i: number, slug: string, title: string, frontendId: string | null) => {
     update(i, { title_slug: slug, title, frontend_id: frontendId });
     try {
       const detail = await getProblemDetail(slug);
       if (!detail) return;
-      applyDifficulty(i, detail.difficulty);
+      const defaults = defaultsFor(detail.difficulty);
       update(i, {
+        difficulty: detail.difficulty,
+        points: defaults.points,
+        beat_bonus_tiers: defaults.tiers,
         title: detail.title,
         frontend_id: detail.frontend_id ?? frontendId ?? null,
       });
     } catch {
-      // Silent fallback: keep whatever defaults the row already has.
+      // Keep whatever defaults the row already has.
     }
+  };
+
+  const toggleOpen = async (slug: string, open: boolean) => {
+    setToggling(slug);
+    setMsg(null);
+    try {
+      await api(`/api/admin/problems/${encodeURIComponent(slug)}/open`, {
+        method: "PUT",
+        token,
+        body: JSON.stringify({ open }),
+      });
+    } catch (e) {
+      setMsg(e instanceof ApiError ? `${e.status}: ${e.message}` : String(e));
+    }
+    setToggling(null);
   };
 
   const save = async () => {
@@ -178,8 +161,8 @@ export default function ProblemsPanel({ snapshot, token }: Props) {
           difficulty: p.difficulty,
           points: Number(p.points) || 0,
           order: i,
-          title: p.title ?? null,
-          frontend_id: p.frontend_id ?? null,
+          title: p.title,
+          frontend_id: p.frontend_id,
           beat_bonus_tiers: p.beat_bonus_tiers.map((t) => ({
             min_beat_pct: Number(t.min_beat_pct),
             bonus_pts: Number(t.bonus_pts),
@@ -191,189 +174,211 @@ export default function ProblemsPanel({ snapshot, token }: Props) {
         token,
         body: JSON.stringify({ problems: cleaned }),
       });
-      setMsg({ ok: true, text: `已儲存 ${cleaned.length} 題` });
+      setMsg(`已儲存 ${cleaned.length} 題，分數已重新計算`);
     } catch (e) {
-      setMsg({ ok: false, text: e instanceof ApiError ? `${e.status}: ${e.message}` : String(e) });
+      setMsg(e instanceof ApiError ? `${e.status}: ${e.message}` : String(e));
     }
     setBusy(false);
   };
 
-  const totalScore = draft.reduce((s, p) => {
-    const base = Number(p.points) || 0;
-    const maxTier = p.beat_bonus_tiers.reduce((m, t) => Math.max(m, Number(t.bonus_pts) || 0), 0);
-    return s + base + maxTier;
+  const maxTotal = draft.reduce((sum, p) => {
+    const bestBonus = p.beat_bonus_tiers.reduce((m, t) => Math.max(m, Number(t.bonus_pts) || 0), 0);
+    return sum + (Number(p.points) || 0) + bestBonus;
   }, 0);
 
   return (
-    <div className="surface rounded-3xl p-5 h-full flex flex-col min-h-0">
-      <div className="flex items-center justify-between mb-3 shrink-0">
-        <h2 className="font-bold text-lg">題目設定</h2>
-        <span className="text-[10px] text-ink-300">最高可得 {totalScore} pt</span>
+    <section className="flex h-full min-h-0 flex-col border border-ink-700 bg-ink-900">
+      <div className="rule-b flex items-baseline justify-between px-4 py-2">
+        <h2 className="font-mono text-[10px] tracking-label text-paper-dim">題目</h2>
+        <span className="tnum font-mono text-[10px] text-paper-faint">最高 {maxTotal} PT</span>
       </div>
 
-      <div className="flex-1 min-h-0 space-y-2 overflow-y-auto pr-1">
-        {draft.map((p, i) => {
-          const tierCount = p.beat_bonus_tiers.length;
-          const isDropTarget = dragOverIdx === i && dragIdx !== null && dragIdx !== i;
+      <div className="min-h-0 flex-1 overflow-y-auto p-3">
+        {draft.map((row, i) => {
+          const saved = openBySlug.has(row.title_slug);
+          const isOpen = openBySlug.get(row.title_slug) ?? false;
+          const dropTarget = dropIdx === i && dragIdx !== null && dragIdx !== i;
           return (
             <div
-              key={p._key}
+              key={row.key}
               onDragOver={(e) => {
-                if (dragIdx === null || locked) return;
+                if (dragIdx === null) return;
                 e.preventDefault();
-                if (dragOverIdx !== i) setDragOverIdx(i);
+                if (dropIdx !== i) setDropIdx(i);
               }}
-              onDragLeave={() => {
-                if (dragOverIdx === i) setDragOverIdx(null);
-              }}
+              onDragLeave={() => dropIdx === i && setDropIdx(null)}
               onDrop={(e) => {
                 e.preventDefault();
                 if (dragIdx !== null) moveRow(dragIdx, i);
                 setDragIdx(null);
-                setDragOverIdx(null);
+                setDropIdx(null);
               }}
-              className={isDropTarget ? "rounded outline outline-2 outline-g-blue/60 outline-offset-2" : ""}
+              className={"py-1 " + (dropTarget ? "outline outline-1 outline-paper" : "")}
             >
-              <div className="grid grid-cols-[16px_1fr_72px_64px_auto_24px] gap-2 items-center">
+              <div className="grid grid-cols-[14px_minmax(0,1fr)_66px_52px_50px_36px_16px] items-center gap-2">
                 <span
-                  draggable={!locked}
+                  draggable
                   onDragStart={(e) => {
                     setDragIdx(i);
                     e.dataTransfer.effectAllowed = "move";
-                    // Keep dataTransfer non-empty so Firefox actually starts the drag.
                     e.dataTransfer.setData("text/plain", String(i));
                   }}
                   onDragEnd={() => {
                     setDragIdx(null);
-                    setDragOverIdx(null);
+                    setDropIdx(null);
                   }}
-                  title={locked ? "比賽已開始，無法調整順序" : "拖曳以調整題目順序"}
-                  className={
-                    "text-ink-300 text-center select-none " +
-                    (locked ? "opacity-30" : "cursor-grab active:cursor-grabbing hover:text-ink-100")
-                  }
-                  aria-label="drag handle"
+                  title="拖曳以調整順序"
+                  className="cursor-grab text-paper-faint hover:text-paper active:cursor-grabbing"
                 >
-                  ≡
+                  <DragHandle />
                 </span>
+
                 <SlugSearch
-                  value={p.title_slug}
-                  title={p.title ?? null}
-                  disabled={locked}
+                  value={row.title_slug}
                   onChange={(v) => update(i, { title_slug: v })}
                   onPick={(slug, title, fid) => onPick(i, slug, title, fid)}
                 />
-                <span
-                  className="px-2 py-1 rounded bg-stage-900/50 border border-white/10 text-[11px] uppercase font-bold tracking-wide text-center"
-                  style={{ color: difficultyColor(p.difficulty) }}
-                  title="難度由 LeetCode 自動判定"
-                >
-                  {p.difficulty}
+
+                <span className="flex justify-center">
+                  <DifficultyMark difficulty={row.difficulty} />
                 </span>
+
                 <input
                   type="number"
-                  value={p.points}
                   min={0}
+                  value={row.points}
+                  aria-label="分數"
                   onChange={(e) => update(i, { points: Number(e.target.value) })}
-                  disabled={locked}
-                  className="px-2 py-1 rounded bg-stage-900/50 border border-white/10 text-sm tabular disabled:opacity-50"
+                  className="tnum w-full rounded-sm border border-ink-700 bg-ink-950 px-1.5 py-1 text-[12px] outline-none focus:border-paper"
                 />
+
                 <button
-                  onClick={() => toggleOpen(i)}
-                  title={p._open ? "收合加分區間" : "展開加分區間"}
-                  className={[
-                    "text-[11px] px-1.5 py-0.5 rounded transition-colors whitespace-nowrap",
-                    tierCount > 0
-                      ? "bg-g-blue/20 text-g-blue hover:bg-g-blue/30"
-                      : "bg-stage-700/50 text-ink-300 hover:bg-stage-600/50",
-                  ].join(" ")}
+                  onClick={() => update(i, { expanded: !row.expanded })}
+                  title="加分區間"
+                  className={
+                    "rounded-sm border px-1 py-1 font-mono text-[9px] " +
+                    (row.beat_bonus_tiers.length > 0
+                      ? "border-paper text-paper"
+                      : "border-ink-700 text-paper-faint")
+                  }
                 >
-                  {tierCount > 0 ? `★ ${tierCount}` : "bonus"}
+                  {row.beat_bonus_tiers.length} 段
                 </button>
+
+                <span className="flex justify-center">
+                  {saved ? (
+                    <Switch
+                      checked={isOpen}
+                      busy={toggling === row.title_slug}
+                      onChange={(next) => toggleOpen(row.title_slug, next)}
+                      label={`開放 ${row.title ?? row.title_slug}`}
+                    />
+                  ) : (
+                    <span className="font-mono text-[9px] text-paper-faint" title="先儲存才能開放">
+                      未存
+                    </span>
+                  )}
+                </span>
+
                 <button
-                  onClick={() => delRow(i)}
-                  disabled={locked}
-                  title="刪除"
-                  className="text-ink-300 hover:text-g-red disabled:opacity-30"
+                  onClick={() => setDraft((d) => d.filter((_, idx) => idx !== i))}
+                  title="刪除這題"
+                  className="text-paper-faint hover:text-paper"
                 >
-                  ×
+                  <Cross />
                 </button>
               </div>
 
-              {p._open && (
-                <div className="ml-2 mt-1.5 pl-3 border-l border-white/10 space-y-1">
-                  {p.beat_bonus_tiers.length === 0 && (
-                    <span className="text-[11px] text-ink-300">尚未設定加分區間</span>
+              {row.expanded && (
+                <div className="ml-6 mt-1.5 space-y-1 border-l border-ink-700 pl-3">
+                  {row.beat_bonus_tiers.length === 0 && (
+                    <p className="font-mono text-[10px] text-paper-faint">尚未設定加分區間</p>
                   )}
-                  {p.beat_bonus_tiers.map((t, ti) => (
-                    <div key={ti} className="flex items-center gap-1.5 text-xs">
-                      <span className="text-ink-300 w-3 text-right">≥</span>
+                  {row.beat_bonus_tiers.map((tier, ti) => (
+                    <div key={ti} className="flex items-center gap-1.5 font-mono text-[11px]">
+                      <span className="text-paper-faint">beats ≥</span>
                       <input
                         type="number"
-                        value={t.min_beat_pct}
                         min={0}
                         max={100}
-                        step={1}
+                        value={tier.min_beat_pct}
+                        aria-label="百分位門檻"
                         onChange={(e) =>
-                          updateTier(i, ti, { min_beat_pct: Number(e.target.value) })
+                          update(i, {
+                            beat_bonus_tiers: row.beat_bonus_tiers.map((t, idx) =>
+                              idx === ti ? { ...t, min_beat_pct: Number(e.target.value) } : t,
+                            ),
+                          })
                         }
-                        disabled={locked}
-                        className="w-14 px-1 py-0.5 rounded bg-stage-900/50 border border-white/10 tabular disabled:opacity-50"
+                        className="tnum w-14 rounded-sm border border-ink-700 bg-ink-950 px-1 py-0.5 outline-none focus:border-paper"
                       />
-                      <span className="text-ink-300">% → +</span>
+                      <span className="text-paper-faint">% 加</span>
                       <input
                         type="number"
-                        value={t.bonus_pts}
                         min={0}
-                        step={1}
-                        onChange={(e) => updateTier(i, ti, { bonus_pts: Number(e.target.value) })}
-                        disabled={locked}
-                        className="w-12 px-1 py-0.5 rounded bg-stage-900/50 border border-white/10 tabular disabled:opacity-50"
+                        value={tier.bonus_pts}
+                        aria-label="加分"
+                        onChange={(e) =>
+                          update(i, {
+                            beat_bonus_tiers: row.beat_bonus_tiers.map((t, idx) =>
+                              idx === ti ? { ...t, bonus_pts: Number(e.target.value) } : t,
+                            ),
+                          })
+                        }
+                        className="tnum w-12 rounded-sm border border-ink-700 bg-ink-950 px-1 py-0.5 outline-none focus:border-paper"
                       />
-                      <span className="text-ink-300">pt</span>
-                      {!locked && (
-                        <button
-                          onClick={() => removeTier(i, ti)}
-                          className="text-ink-300 hover:text-g-red ml-0.5"
-                        >
-                          ×
-                        </button>
-                      )}
+                      <span className="text-paper-faint">pt</span>
+                      <button
+                        onClick={() =>
+                          update(i, {
+                            beat_bonus_tiers: row.beat_bonus_tiers.filter((_, idx) => idx !== ti),
+                          })
+                        }
+                        title="移除這個區間"
+                        className="ml-1 text-paper-faint hover:text-paper"
+                      >
+                        <Cross size={10} />
+                      </button>
                     </div>
                   ))}
-                  {!locked && (
-                    <button
-                      onClick={() => addTier(i)}
-                      className="text-[10px] px-1.5 py-0.5 rounded bg-stage-700/50 hover:bg-stage-600/50"
-                    >
-                      + 加分區間
-                    </button>
-                  )}
+                  <button
+                    onClick={() =>
+                      update(i, {
+                        beat_bonus_tiers: [
+                          ...row.beat_bonus_tiers,
+                          { min_beat_pct: 50, bonus_pts: 1 },
+                        ],
+                      })
+                    }
+                    className="flex items-center gap-1 font-mono text-[10px] text-paper-dim hover:text-paper"
+                  >
+                    <Plus size={10} /> 加分區間
+                  </button>
                 </div>
               )}
             </div>
           );
         })}
+
+        <button
+          onClick={() => setDraft((d) => [...d, newRow()])}
+          className="mt-2 flex items-center gap-1 rounded-sm border border-ink-700 px-2 py-1 font-mono text-[11px] text-paper-dim hover:border-paper hover:text-paper"
+        >
+          <Plus /> 新增題目
+        </button>
       </div>
 
-      {!locked && (
-        <button onClick={addRow} className="mt-3 text-xs px-2 py-1 rounded bg-stage-700 hover:bg-stage-600 shrink-0 self-start">
-          + 新增題目
-        </button>
-      )}
-
-      <div className="mt-3 flex items-center gap-2 shrink-0">
+      <div className="rule-t flex items-center gap-3 px-4 py-2.5">
         <button
           onClick={save}
-          disabled={busy || locked}
-          className="px-4 py-1.5 rounded bg-g-blue text-white text-sm font-bold disabled:opacity-50"
+          disabled={busy}
+          className="rounded-sm bg-paper px-4 py-1.5 font-display text-[14px] font-bold text-ink-950 hover:brightness-95 disabled:opacity-40"
         >
-          {busy ? "儲存中…" : "儲存"}
+          {busy ? "儲存中" : "儲存"}
         </button>
-        {locked && <span className="text-[11px] text-g-yellow">比賽已開始，題目鎖定中</span>}
-        {msg && <span className={"text-xs " + (msg.ok ? "text-g-green" : "text-g-red")}>{msg.text}</span>}
+        {msg && <span className="truncate text-[11px] text-paper-dim">{msg}</span>}
       </div>
-    </div>
+    </section>
   );
 }
 
@@ -383,19 +388,19 @@ interface SearchHit {
   frontend_id: string | null;
 }
 
-interface SlugSearchProps {
-  value: string;
-  title: string | null;
-  disabled: boolean;
-  onChange: (v: string) => void;
-  onPick: (slug: string, title: string, frontendId: string | null) => void;
-}
-
 function normaliseQuery(raw: string): string {
   return raw.trim().replace(/\s+/g, "-");
 }
 
-function SlugSearch({ value, disabled, onChange, onPick }: SlugSearchProps) {
+function SlugSearch({
+  value,
+  onChange,
+  onPick,
+}: {
+  value: string;
+  onChange: (v: string) => void;
+  onPick: (slug: string, title: string, frontendId: string | null) => void;
+}) {
   const [hits, setHits] = useState<SearchHit[]>([]);
   const [open, setOpen] = useState(false);
   const [loading, setLoading] = useState(false);
@@ -404,27 +409,24 @@ function SlugSearch({ value, disabled, onChange, onPick }: SlugSearchProps) {
   const dropdownRef = useRef<HTMLDivElement>(null);
   const debounceRef = useRef<number | null>(null);
 
-  // Track input bounds while open; capture-phase scroll catches all ancestor
-  // scroll containers (the inner panel scroll, the page itself, etc.).
   useEffect(() => {
     if (!open) {
       setPos(null);
       return;
     }
-    const update = () => {
+    const track = () => {
       const rect = inputRef.current?.getBoundingClientRect();
-      if (rect) setPos({ top: rect.bottom + 4, left: rect.left, width: rect.width });
+      if (rect) setPos({ top: rect.bottom + 4, left: rect.left, width: Math.max(rect.width, 220) });
     };
-    update();
-    window.addEventListener("scroll", update, true);
-    window.addEventListener("resize", update);
+    track();
+    window.addEventListener("scroll", track, true);
+    window.addEventListener("resize", track);
     return () => {
-      window.removeEventListener("scroll", update, true);
-      window.removeEventListener("resize", update);
+      window.removeEventListener("scroll", track, true);
+      window.removeEventListener("resize", track);
     };
   }, [open]);
 
-  // Outside click — also exclude clicks inside the portal-rendered dropdown.
   useEffect(() => {
     const onClick = (e: MouseEvent) => {
       const target = e.target as Node;
@@ -458,37 +460,33 @@ function SlugSearch({ value, disabled, onChange, onPick }: SlugSearchProps) {
     }, 200);
   };
 
-  const handleChange = (raw: string) => {
-    const slug = normaliseQuery(raw);
-    onChange(slug);
-    runSearch(raw);
-  };
-
   const dropdown =
-    open && pos && !disabled
+    open && pos
       ? createPortal(
           <div
             ref={dropdownRef}
-            style={{ position: "fixed", top: pos.top, left: pos.left, width: pos.width, zIndex: 9999 }}
-            className="max-h-64 overflow-y-auto rounded bg-stage-800 border border-white/10 shadow-glow text-sm"
+            style={{ position: "fixed", top: pos.top, left: pos.left, width: pos.width, zIndex: 60 }}
+            className="max-h-64 overflow-y-auto border border-ink-600 bg-ink-800"
           >
-            {loading && <div className="px-3 py-2 text-[11px] text-ink-300">搜尋中…</div>}
+            {loading && <p className="px-3 py-2 font-mono text-[10px] text-paper-faint">搜尋中</p>}
             {!loading && hits.length === 0 && (
-              <div className="px-3 py-2 text-[11px] text-ink-300">沒有結果</div>
+              <p className="px-3 py-2 font-mono text-[10px] text-paper-faint">沒有符合的題目</p>
             )}
-            {hits.map((h) => (
+            {hits.map((hit) => (
               <button
-                key={h.title_slug}
+                key={hit.title_slug}
                 type="button"
                 onMouseDown={(e) => e.preventDefault()}
                 onClick={() => {
-                  onPick(h.title_slug, h.title, h.frontend_id);
+                  onPick(hit.title_slug, hit.title, hit.frontend_id);
                   setOpen(false);
                 }}
-                className="block w-full text-left px-3 py-1.5 hover:bg-stage-700"
+                className="block w-full px-3 py-1.5 text-left hover:bg-ink-700"
               >
-                <div className="text-ink-100 truncate">{h.title}</div>
-                <div className="text-[10px] text-ink-300 font-mono truncate">{h.title_slug}</div>
+                <span className="block truncate text-[13px]">{hit.title}</span>
+                <span className="block truncate font-mono text-[10px] text-paper-faint">
+                  {hit.title_slug}
+                </span>
               </button>
             ))}
           </div>,
@@ -497,15 +495,18 @@ function SlugSearch({ value, disabled, onChange, onPick }: SlugSearchProps) {
       : null;
 
   return (
-    <div className="relative">
+    <div className="relative min-w-0">
       <input
         ref={inputRef}
         value={value}
-        onChange={(e) => handleChange(e.target.value)}
+        aria-label="題目"
+        placeholder="搜尋題目關鍵字"
+        onChange={(e) => {
+          onChange(normaliseQuery(e.target.value));
+          runSearch(e.target.value);
+        }}
         onFocus={() => value.length >= 2 && setOpen(true)}
-        placeholder="輸入題目關鍵字…"
-        disabled={disabled}
-        className="w-full px-2 py-1 rounded bg-stage-900/50 border border-white/10 text-sm font-mono disabled:opacity-50"
+        className="w-full rounded-sm border border-ink-700 bg-ink-950 px-2 py-1 font-mono text-[12px] outline-none focus:border-paper"
       />
       {dropdown}
     </div>

@@ -1,106 +1,70 @@
+import { teamColor, teamColors } from "../../lib/color";
+import { fmtClock } from "../../lib/format";
 import type { AdminSnapshot } from "../../lib/types";
 
-const STATUS_COLOR: Record<string, string> = {
-  AC: "#34A853",
-  WA: "#EA4335",
-  TLE: "#FBBC04",
-  RE: "#EA4335",
-  CE: "#EA4335",
-  MLE: "#FBBC04",
-  OLE: "#FBBC04",
-};
-
+/**
+ * Everything the poller ingested, newest first.
+ *
+ * Unlike the public ticker this hides nothing — a re-AC that changed no score
+ * and an AC that landed after the problem closed are both worth seeing when
+ * someone asks "why didn't I get points".
+ */
 export default function EventsPanel({ snapshot }: { snapshot: AdminSnapshot }) {
-  // Only show events that landed AT or AFTER the contest start. Untracked
-  // submissions are kept (with a 「非題目」 marker) so admins can spot
-  // off-topic activity. Sorted newest-first, capped at the latest 200.
-  const startMs = snapshot.start_time ? Date.parse(snapshot.start_time) : null;
-  const events = [...snapshot.events]
-    .filter((e) => {
-      if (startMs == null) return false;
-      return Date.parse(e.submitted_at) >= startMs;
-    })
-    .reverse()
-    .slice(0, 200);
+  const colors = teamColors(snapshot.groups);
+  const events = [...snapshot.events].reverse();
 
   return (
-    <div className="surface rounded-3xl p-5 h-full flex flex-col min-h-0">
-      <div className="flex items-center justify-between mb-3 shrink-0">
-        <h2 className="font-bold text-lg">Submission 紀錄</h2>
-        <span className="text-[10px] text-ink-300">
-          {events.length} 筆 · 自比賽開始
-        </span>
+    <section className="flex h-full min-h-0 flex-col border border-ink-700 bg-ink-900">
+      <div className="rule-b flex items-baseline justify-between px-4 py-2">
+        <h2 className="font-mono text-[10px] tracking-label text-paper-dim">提交紀錄</h2>
+        <span className="tnum font-mono text-[10px] text-paper-faint">{events.length} 筆</span>
       </div>
-      <div className="flex-1 min-h-0 overflow-y-auto text-[12px] font-mono">
-        {events.map((e) => {
-          const colour = STATUS_COLOR[e.short_label] ?? "#9aa3c7";
-          const beat = e.beat_pct != null ? `${Math.round(e.beat_pct)}%` : null;
-          return (
-            <div
-              key={e.id}
-              className={
-                "grid grid-cols-[64px_44px_1fr_44px_56px] gap-2 py-1 border-b border-white/5 items-center " +
-                (!e.is_tracked ? "opacity-70" : "")
-              }
-            >
-              <span className="text-ink-300 text-[10px] tabular">
-                {new Date(e.submitted_at).toLocaleTimeString([], { hour12: false })}
-              </span>
-              <span
-                className="px-1 rounded text-center text-[10px] font-bold"
-                style={{
-                  background: e.is_accepted ? colour : "transparent",
-                  color: e.is_accepted ? "#070b1f" : colour,
-                  border: e.is_accepted ? "none" : `1px solid ${colour}`,
-                }}
+
+      <div className="min-h-0 flex-1 overflow-y-auto">
+        {events.length === 0 ? (
+          <p className="px-4 py-8 text-center text-[13px] text-paper-faint">
+            還沒有提交。開放一題就會開始輪詢。
+          </p>
+        ) : (
+          events.map((event) => {
+            const color = teamColor(event.group_id, colors);
+            return (
+              <div
+                key={event.id}
+                className="grid grid-cols-[52px_34px_minmax(0,1fr)_44px_40px] items-center gap-2 border-b border-ink-800 px-3 py-1.5"
               >
-                {e.short_label}
-              </span>
-              <span className="truncate flex items-center gap-1">
-                <b>{e.username}</b>
-                <span className="text-ink-300">·</span>
-                <span className="truncate text-ink-200">{e.title || e.title_slug}</span>
-                {!e.is_tracked && (
-                  <span
-                    className="ml-1 px-1 rounded bg-g-yellow/20 text-g-yellow text-[9px] font-bold tracking-wide shrink-0"
-                    title="此題目不在比賽題目清單內"
-                  >
-                    非題目
-                  </span>
-                )}
-                {e.is_overflow && (
-                  <span
-                    className="ml-1 text-ink-300/60 shrink-0"
-                    title="超過前 3 次 AC，未採計"
-                    aria-label="not counted"
-                  >
-                    ⊘
-                  </span>
-                )}
-                {e.note && <span className="text-ink-300/70"> · {e.note}</span>}
-              </span>
-              <span className="text-right text-[10px] tabular text-g-blue">
-                {beat ? `★${beat}` : ""}
-              </span>
-              <span className="text-right text-g-green tabular">
-                {e.is_scoring ? (
-                  <>
-                    +{e.points_delta}
-                    {e.bonus_delta > 0 && (
-                      <span className="text-[9px] text-g-blue/80"> (+{e.bonus_delta})</span>
-                    )}
-                  </>
-                ) : ""}
-              </span>
-            </div>
-          );
-        })}
-        {!events.length && (
-          <div className="text-center text-ink-300 py-6">
-            {startMs == null ? "尚未設定開始時間" : "尚未有提交"}
-          </div>
+                <span className="tnum font-mono text-[10px] text-paper-faint">
+                  {fmtClock(new Date(event.submitted_at))}
+                </span>
+                <span
+                  className="flex h-[18px] items-center justify-center font-mono text-[10px] font-bold"
+                  style={
+                    event.is_accepted
+                      ? { background: color, color: "#0E1113" }
+                      : { boxShadow: "inset 0 0 0 1px #363E44", color: "#9AA1A6" }
+                  }
+                >
+                  {event.short_label}
+                </span>
+                <span className="min-w-0 truncate text-[12px]">
+                  <b className="font-bold">{event.nickname}</b>
+                  <span className="text-paper-faint"> · </span>
+                  <span className="text-paper-dim">{event.title ?? event.title_slug}</span>
+                  {event.note && (
+                    <span className="font-mono text-[10px] text-paper-faint"> · {event.note}</span>
+                  )}
+                </span>
+                <span className="tnum text-right font-mono text-[10px] text-paper-dim">
+                  {event.beat_pct != null ? `${Math.round(event.beat_pct)}%` : ""}
+                </span>
+                <span className="tnum text-right font-display text-[14px] font-bold">
+                  {event.is_scoring ? `+${event.points_delta}` : ""}
+                </span>
+              </div>
+            );
+          })
         )}
       </div>
-    </div>
+    </section>
   );
 }

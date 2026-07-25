@@ -1,46 +1,41 @@
 import { useContestStream } from "../hooks/useContestStream";
-import Header from "../components/scoreboard/Header";
-import Leaderboard from "../components/scoreboard/Leaderboard";
-import EventFeed from "../components/scoreboard/EventFeed";
-import ProblemBoard from "../components/scoreboard/ProblemBoard";
+import TeamBar from "../components/scoreboard/TeamBar";
+import Standings from "../components/scoreboard/Standings";
+import ProblemStack from "../components/scoreboard/ProblemStack";
+import Ticker from "../components/scoreboard/Ticker";
+import { teamColors } from "../lib/color";
+import { maxAvailablePoints } from "../lib/score";
 
 export default function Scoreboard() {
   const { snapshot, conn } = useContestStream({ audience: "public" });
 
   if (!snapshot) {
     return (
-      <div className="w-screen h-screen flex items-center justify-center text-ink-300">
+      <div className="flex h-screen w-screen items-center justify-center">
         <div className="text-center">
-          <div className="text-2xl font-black mb-2">連線中…</div>
-          <div className="text-sm">與後端建立資料串流</div>
+          <div className="font-display text-[28px] font-bold tracking-label">正在連線</div>
+          <div className="mt-2 font-mono text-[11px] text-paper-faint">等待後端資料串流</div>
         </div>
       </div>
     );
   }
 
+  const colors = teamColors(snapshot.groups);
+  const maxPoints = maxAvailablePoints(snapshot.problems);
+  const openCount = snapshot.problems.filter((p) => p.is_open).length;
+
   return (
-    <div className="w-screen h-screen p-5 flex flex-col gap-5 stage-grid">
-      <Header
-        status={snapshot.status}
-        startTime={snapshot.start_time}
-        endTime={snapshot.end_time}
+    <div className="flex h-screen w-screen flex-col overflow-hidden">
+      <TeamBar
+        standings={snapshot.group_leaderboard}
         connected={conn.connected}
+        openCount={openCount}
       />
-      <div className="flex-1 grid grid-cols-[360px_1fr_360px] gap-5 min-h-0">
-        <Leaderboard rows={snapshot.leaderboard} problems={snapshot.problems} />
-        <ProblemBoard
-          problems={snapshot.problems}
-          events={snapshot.events}
-          leaderboard={snapshot.leaderboard}
-          status={snapshot.status}
-        />
-        <EventFeed
-          events={snapshot.events}
-          problems={snapshot.problems}
-          startTime={snapshot.start_time}
-          endTime={snapshot.end_time}
-        />
-      </div>
+      <main className="grid min-h-0 flex-1 grid-cols-[320px_minmax(0,1fr)]">
+        <Standings rows={snapshot.leaderboard} colors={colors} maxPoints={maxPoints} />
+        <ProblemStack problems={snapshot.problems} colors={colors} />
+      </main>
+      <Ticker events={snapshot.events} colors={colors} />
     </div>
   );
 }
