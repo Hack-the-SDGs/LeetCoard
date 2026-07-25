@@ -1,7 +1,11 @@
-"""Pydantic models for contest state, persisted as JSON.
+"""Pydantic models for practice state, persisted as JSON.
 
 Time policy: every datetime stored here is timezone-aware UTC.
 The frontend converts to the projector's local timezone for display.
+
+There is no global session clock. Each problem carries its own open window,
+driven by the teacher's toggle, and that window is the only thing that decides
+whether an accepted submission scores.
 """
 
 from __future__ import annotations
@@ -16,12 +20,6 @@ from pydantic import BaseModel, ConfigDict, Field
 
 def _utcnow() -> datetime:
     return datetime.now(timezone.utc)
-
-
-class ContestStatus(str, Enum):
-    setup = "setup"
-    running = "running"
-    ended = "ended"
 
 
 class Difficulty(str, Enum):
@@ -51,6 +49,35 @@ class Problem(BaseModel):
     color: Optional[str] = None  # css colour for status pip; defaults from difficulty
     beat_bonus_tiers: List[BonusTier] = Field(default_factory=list)
 
+    # Practice window. Opening starts scoring, closing stops it. Re-opening
+    # restarts the window from that moment, so an AC made while the problem was
+    # closed never scores. A problem that has been opened at least once stays
+    # visible on the public board forever, so earned points never disappear.
+    is_open: bool = False
+    opened_at: Optional[datetime] = None
+    closed_at: Optional[datetime] = None
+
+    @property
+    def was_opened(self) -> bool:
+        """True once the teacher has opened this problem at least once."""
+        return self.opened_at is not None
+
+    def accepts(self, submitted_at: datetime) -> bool:
+        """True when `submitted_at` falls inside this problem's open window.
+
+        Closing records `closed_at` rather than slamming the door immediately,
+        so a submission made a second before the toggle still scores even
+        though the poll that discovers it arrives afterwards.
+        """
+        if self.opened_at is None or submitted_at < self.opened_at:
+            return False
+        return self.closed_at is None or submitted_at <= self.closed_at
+
+    def max_points(self) -> int:
+        """Base points plus the most generous bonus tier."""
+        best_bonus = max((t.bonus_pts for t in self.beat_bonus_tiers), default=0)
+        return self.points + best_bonus
+
 
 class Participant(BaseModel):
     username: str
@@ -63,7 +90,7 @@ class Participant(BaseModel):
     problem_first_ac_at: Dict[str, datetime] = Field(default_factory=dict)
     problem_bonus_pts: Dict[str, int] = Field(default_factory=dict)  # current bonus per problem (upgradable)
     problem_best_beat_pct: Dict[str, float] = Field(default_factory=dict)  # best beat% seen so far
-    problem_ac_count: Dict[str, int] = Field(default_factory=dict)  # in-window AC count per problem
+    problem_best_submission_id: Dict[str, str] = Field(default_factory=dict)  # submission behind that best beat%
     reached_current_score_at: Optional[datetime] = None
     added_at: datetime = Field(default_factory=_utcnow)
 
@@ -89,7 +116,11 @@ class SubmissionStatus(str, Enum):
 
 
 class SubmissionEvent(BaseModel):
-    """Anything that should appear in the right-side event feed."""
+    """Anything that should appear in the event feed.
+
+    Only submissions to configured problems produce events; everything else a
+    student happens to submit on LeetCode is silently ignored.
+    """
 
     id: str = Field(default_factory=lambda: uuid4().hex)
     submission_id: Optional[str] = None  # provider-side id, e.g. LeetCode submission id
@@ -105,18 +136,12 @@ class SubmissionEvent(BaseModel):
     bonus_delta: int = 0        # bonus portion of points_delta (from beat-% tiers)
     beat_pct: Optional[float] = None  # runtime beat percentile reported by LeetCode
     is_accepted: bool = False
-    is_scoring: bool = False  # True only if it actually awarded points (first valid AC)
-    is_overflow: bool = False  # True for AC #4+ on a problem (not counted toward bonus)
-    is_tracked: bool = True    # False for submissions to non-contest problems
-    note: Optional[str] = None  # e.g. "outside contest window", "duplicate"
+    is_scoring: bool = False  # True only if it actually awarded points
+    note: Optional[str] = None  # e.g. "problem closed", "bonus +2→+4"
 
 
 class Contest(BaseModel):
-    """Full persistent contest state. Mirrored to disk as JSON on every change."""
-
-    status: ContestStatus = ContestStatus.setup
-    start_time: Optional[datetime] = None
-    end_time: Optional[datetime] = None
+    """Full persistent practice state. Mirrored to disk as JSON on every change."""
 
     problems: List[Problem] = Field(default_factory=list)
     participants: Dict[str, Participant] = Field(default_factory=dict)  # keyed by username
@@ -125,14 +150,12 @@ class Contest(BaseModel):
 
     events: List[SubmissionEvent] = Field(default_factory=list)
 
-    last_started_at: Optional[datetime] = None
-    last_ended_at: Optional[datetime] = None
     last_reset_at: Optional[datetime] = None
 
     model_config = ConfigDict(arbitrary_types_allowed=True)
 
 
 def default_contest() -> Contest:
-    """Cold-boot factory — empty contest in setup state."""
+    """Cold-boot factory — empty practice board, every problem closed."""
 
     return Contest()

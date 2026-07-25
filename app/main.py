@@ -17,7 +17,6 @@ from .integrations.leetcode import LeetCodeClient
 from .routes import admin as admin_routes
 from .routes import public as public_routes
 from .workers.polling import PollingWorker
-from .workers.scheduler import ContestScheduler
 
 logging.basicConfig(
     level=logging.INFO,
@@ -49,11 +48,7 @@ async def lifespan(app: FastAPI):
     polling = PollingWorker(engine, client, settings)
     await polling.start()
 
-    scheduler = ContestScheduler(engine)
-    await scheduler.start()
-
     app.state.polling_worker = polling
-    app.state.scheduler = scheduler
 
     # Best-effort one-shot backfill: legacy problems may lack frontend_id.
     asyncio.create_task(engine.backfill_problem_metadata(client.get_problem))
@@ -62,11 +57,10 @@ async def lifespan(app: FastAPI):
         yield
     finally:
         log.info("Shutting down workers")
-        for worker in (scheduler, polling):
-            try:
-                await worker.stop()
-            except Exception:
-                log.exception("worker stop failed")
+        try:
+            await polling.stop()
+        except Exception:
+            log.exception("worker stop failed")
         await store.flush_now()
         await client.aclose()
 
@@ -74,8 +68,8 @@ async def lifespan(app: FastAPI):
 def create_app() -> FastAPI:
     settings = get_settings()
     app = FastAPI(
-        title="GDG NTUST · LeetCode Contest API",
-        version="0.1.0",
+        title="GDG NTUST · LeetCode Practice Board API",
+        version="0.2.0",
         lifespan=lifespan,
     )
     app.add_middleware(

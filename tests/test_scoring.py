@@ -1,13 +1,13 @@
-"""Scoring + ranking + persistence-roundtrip tests.
+"""Scoring, ranking, problem-window and persistence tests.
 
 These exist so we can break the implementation freely without breaking the
-contract: every box in the spec's "計分規則" section is enforced here.
+contract. The contract changed shape when the global session clock went away:
+each problem now carries its own open window, and that window is the only thing
+that decides whether an accepted submission scores.
 """
 
 from __future__ import annotations
 
-import asyncio
-import json
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
@@ -18,12 +18,13 @@ from app.core.sse import Broadcaster
 from app.core.storage import ContestStore
 from app.domain.models import (
     Contest,
-    ContestStatus,
     Difficulty,
     Participant,
     Problem,
 )
 from app.domain.state import ContestEngine
+
+START = datetime(2026, 1, 1, 10, tzinfo=timezone.utc)
 
 
 def _make_engine(tmp_path: Path) -> tuple[ContestEngine, ContestStore]:
@@ -39,17 +40,29 @@ def _make_engine(tmp_path: Path) -> tuple[ContestEngine, ContestStore]:
     return engine, store
 
 
-def _seed(engine: ContestEngine, start: datetime, end: datetime) -> None:
+def _problem(slug: str, difficulty: Difficulty, points: int, order: int, *,
+             opened_at: datetime | None = START,
+             closed_at: datetime | None = None) -> Problem:
+    return Problem(
+        title_slug=slug,
+        difficulty=difficulty,
+        points=points,
+        order=order,
+        is_open=opened_at is not None and closed_at is None,
+        opened_at=opened_at,
+        closed_at=closed_at,
+    )
+
+
+def _seed(engine: ContestEngine, *, problems: list[Problem] | None = None) -> None:
     engine._store._contest = Contest(
-        status=ContestStatus.running,
-        start_time=start,
-        end_time=end,
-        last_started_at=start,
-        problems=[
-            Problem(title_slug="two-sum", difficulty=Difficulty.easy, points=1, order=0),
-            Problem(title_slug="valid-parentheses", difficulty=Difficulty.easy, points=1, order=1),
-            Problem(title_slug="3sum", difficulty=Difficulty.medium, points=3, order=2),
-            Problem(title_slug="trapping-rain-water", difficulty=Difficulty.hard, points=5, order=3),
+        problems=problems
+        if problems is not None
+        else [
+            _problem("two-sum", Difficulty.easy, 1, 0),
+            _problem("valid-parentheses", Difficulty.easy, 1, 1),
+            _problem("3sum", Difficulty.medium, 3, 2),
+            _problem("trapping-rain-water", Difficulty.hard, 5, 3),
         ],
         participants={
             "alice": Participant(username="alice", student_id="B11000001"),
@@ -68,19 +81,55 @@ def _sub(sub_id: int, slug: str, status: str, t: datetime) -> dict:
     }
 
 
+# ---------------------------------------------------------------------------
+# Problem.accepts — the whole scoring gate, as a pure function
+# ---------------------------------------------------------------------------
+
+def test_window_rejects_submissions_from_before_the_problem_opened():
+    problem = _problem("two-sum", Difficulty.easy, 1, 0)
+    assert not problem.accepts(START - timedelta(seconds=1))
+    assert problem.accepts(START)
+    assert problem.accepts(START + timedelta(hours=3))
+
+
+def test_window_rejects_submissions_after_close_but_keeps_the_edge():
+    closed = START + timedelta(minutes=10)
+    problem = _problem("two-sum", Difficulty.easy, 1, 0, closed_at=closed)
+    assert problem.accepts(closed - timedelta(seconds=1))
+    assert problem.accepts(closed)
+    assert not problem.accepts(closed + timedelta(seconds=1))
+
+
+def test_never_opened_problem_accepts_nothing():
+    problem = _problem("two-sum", Difficulty.easy, 1, 0, opened_at=None)
+    assert not problem.was_opened
+    assert not problem.accepts(START)
+
+
+def test_reopened_window_excludes_the_closed_gap():
+    """Opening restarts the window, so an AC made while the problem was shut
+    can never be back-credited when the teacher opens it again."""
+    reopened = START + timedelta(minutes=20)
+    problem = _problem("two-sum", Difficulty.easy, 1, 0, opened_at=reopened)
+    assert not problem.accepts(START + timedelta(minutes=15))  # during the gap
+    assert problem.accepts(reopened + timedelta(minutes=1))
+
+
+# ---------------------------------------------------------------------------
+# Ingestion
+# ---------------------------------------------------------------------------
+
 @pytest.mark.asyncio
 async def test_first_ac_scores_and_duplicates_dont(tmp_path: Path):
     engine, _ = _make_engine(tmp_path)
-    start = datetime(2026, 1, 1, 10, tzinfo=timezone.utc)
-    end = start + timedelta(hours=2)
-    _seed(engine, start, end)
+    _seed(engine)
 
     await engine.ingest_submissions(
         "alice",
         [
-            _sub(1, "two-sum", "Wrong Answer", start + timedelta(minutes=1)),
-            _sub(2, "two-sum", "Accepted", start + timedelta(minutes=2)),
-            _sub(3, "two-sum", "Accepted", start + timedelta(minutes=3)),
+            _sub(1, "two-sum", "Wrong Answer", START + timedelta(minutes=1)),
+            _sub(2, "two-sum", "Accepted", START + timedelta(minutes=2)),
+            _sub(3, "two-sum", "Accepted", START + timedelta(minutes=3)),
         ],
     )
     alice = engine.contest.participants["alice"]
@@ -92,74 +141,65 @@ async def test_first_ac_scores_and_duplicates_dont(tmp_path: Path):
 
 
 @pytest.mark.asyncio
-async def test_ac_outside_window_is_not_scored(tmp_path: Path):
+async def test_ac_outside_the_problem_window_is_not_scored(tmp_path: Path):
     engine, _ = _make_engine(tmp_path)
-    start = datetime(2026, 1, 1, 10, tzinfo=timezone.utc)
-    end = start + timedelta(hours=2)
-    _seed(engine, start, end)
+    _seed(engine, problems=[
+        _problem("two-sum", Difficulty.easy, 1, 0, closed_at=START + timedelta(minutes=10)),
+    ])
 
     await engine.ingest_submissions(
         "alice",
         [
-            _sub(10, "two-sum", "Accepted", start - timedelta(minutes=5)),  # before
-            _sub(11, "two-sum", "Accepted", end + timedelta(minutes=5)),    # after
+            _sub(10, "two-sum", "Accepted", START - timedelta(minutes=5)),           # before open
+            _sub(11, "two-sum", "Accepted", START + timedelta(minutes=15)),          # after close
         ],
     )
     assert engine.contest.participants["alice"].score == 0
     assert all(not e.is_scoring for e in engine.contest.events)
+    assert all(e.note == "problem closed" for e in engine.contest.events)
 
 
 @pytest.mark.asyncio
-async def test_late_arriving_in_window_submission_still_scores(tmp_path: Path):
-    """LeetCode submission timestamp is in window, but server only saw it
-    after `endTime`. The spec requires it to count."""
+async def test_ac_just_before_close_still_scores_when_the_poll_arrives_late(tmp_path: Path):
+    """The teacher closes a problem at 10:10 and the poll that discovers a
+    10:09:30 submission only lands at 10:10:20. It must still count."""
     engine, _ = _make_engine(tmp_path)
-    start = datetime(2026, 1, 1, 10, tzinfo=timezone.utc)
-    end = start + timedelta(hours=2)
-    _seed(engine, start, end)
-    engine.contest.status = ContestStatus.ended  # simulate post-end grace
+    closed = START + timedelta(minutes=10)
+    _seed(engine, problems=[_problem("3sum", Difficulty.medium, 3, 0, closed_at=closed)])
 
     await engine.ingest_submissions(
-        "carol",
-        [_sub(20, "3sum", "Accepted", end - timedelta(seconds=30))],
+        "carol", [_sub(20, "3sum", "Accepted", closed - timedelta(seconds=30))]
     )
     assert engine.contest.participants["carol"].score == 3
 
 
 @pytest.mark.asyncio
-async def test_untracked_problem_does_not_score(tmp_path: Path):
-    """Submissions to untracked problems are emitted as informational events
-    (with is_tracked=False) so the admin can see them, but never award points."""
+async def test_submission_to_an_unconfigured_problem_is_ignored_entirely(tmp_path: Path):
+    """Students grinding other LeetCode problems must not reach the feed —
+    with no session clock left to gate them, 70 students would drown it."""
     engine, _ = _make_engine(tmp_path)
-    start = datetime(2026, 1, 1, 10, tzinfo=timezone.utc)
-    end = start + timedelta(hours=2)
-    _seed(engine, start, end)
+    _seed(engine)
 
     await engine.ingest_submissions(
         "alice",
-        [_sub(30, "longest-palindrome", "Accepted", start + timedelta(minutes=5))],
+        [_sub(30, "longest-palindrome", "Accepted", START + timedelta(minutes=5))],
     )
     assert engine.contest.participants["alice"].score == 0
-    assert all(not e.is_scoring for e in engine.contest.events)
-    assert all(not e.is_tracked for e in engine.contest.events)
+    assert engine.contest.events == []
+    assert "30" in engine.contest.seen_submission_ids  # still deduped
 
 
 @pytest.mark.asyncio
 async def test_ranking_tiebreak_by_first_reach_time(tmp_path: Path):
     engine, _ = _make_engine(tmp_path)
-    start = datetime(2026, 1, 1, 10, tzinfo=timezone.utc)
-    end = start + timedelta(hours=2)
-    _seed(engine, start, end)
+    _seed(engine)
 
-    # alice: 1pt at t+10min
     await engine.ingest_submissions(
-        "alice", [_sub(40, "two-sum", "Accepted", start + timedelta(minutes=10))]
+        "alice", [_sub(40, "two-sum", "Accepted", START + timedelta(minutes=10))]
     )
-    # bob: 1pt at t+5min  -> should outrank alice on tiebreak
     await engine.ingest_submissions(
-        "bob", [_sub(41, "two-sum", "Accepted", start + timedelta(minutes=5))]
+        "bob", [_sub(41, "two-sum", "Accepted", START + timedelta(minutes=5))]
     )
-    # carol: 0pt — last
     leaderboard = engine._leaderboard_snapshot()
     rank_by_user = {row["username"]: row["rank"] for row in leaderboard}
     assert rank_by_user["bob"] < rank_by_user["alice"]
@@ -169,35 +209,185 @@ async def test_ranking_tiebreak_by_first_reach_time(tmp_path: Path):
 @pytest.mark.asyncio
 async def test_dedupe_across_polls(tmp_path: Path):
     engine, _ = _make_engine(tmp_path)
-    start = datetime(2026, 1, 1, 10, tzinfo=timezone.utc)
-    end = start + timedelta(hours=2)
-    _seed(engine, start, end)
+    _seed(engine)
 
-    sub = _sub(50, "valid-parentheses", "Accepted", start + timedelta(minutes=4))
+    sub = _sub(50, "valid-parentheses", "Accepted", START + timedelta(minutes=4))
     await engine.ingest_submissions("alice", [sub])
     await engine.ingest_submissions("alice", [sub, sub])  # same poll again
     assert engine.contest.participants["alice"].score == 1
     assert sum(1 for e in engine.contest.events if e.submission_id == "50") == 1
 
 
+# ---------------------------------------------------------------------------
+# Live problem edits
+# ---------------------------------------------------------------------------
+
+@pytest.mark.asyncio
+async def test_saving_the_problem_list_never_disturbs_a_live_window(tmp_path: Path):
+    """The teacher fixes a typo mid-session. Everything that survives the save
+    must keep its window, or saving would silently close the live problem."""
+    engine, _ = _make_engine(tmp_path)
+    _seed(engine, problems=[_problem("two-sum", Difficulty.easy, 1, 0)])
+
+    await engine.set_problems([
+        Problem(title_slug="two-sum", difficulty=Difficulty.easy, points=2, order=0,
+                title="Two Sum"),
+    ])
+    problem = engine.contest.problems[0]
+    assert problem.is_open is True
+    assert problem.opened_at == START
+    assert problem.closed_at is None
+    assert problem.title == "Two Sum"
+    assert problem.points == 2
+
+
+@pytest.mark.asyncio
+async def test_deleting_a_solved_problem_takes_its_points_back(tmp_path: Path):
+    engine, _ = _make_engine(tmp_path)
+    _seed(engine)
+
+    await engine.ingest_submissions("alice", [
+        _sub(60, "two-sum", "Accepted", START + timedelta(minutes=1)),
+        _sub(61, "3sum", "Accepted", START + timedelta(minutes=2)),
+    ])
+    assert engine.contest.participants["alice"].score == 4
+
+    await engine.set_problems([
+        Problem(title_slug="two-sum", difficulty=Difficulty.easy, points=1, order=0),
+    ])
+    alice = engine.contest.participants["alice"]
+    assert alice.score == 1
+    assert alice.solved_problems == {"two-sum"}
+    assert "3sum" not in alice.problem_first_ac_at
+    assert "3sum" not in alice.problem_best_beat_pct
+
+
+@pytest.mark.asyncio
+async def test_changing_points_realigns_everyone_who_already_solved_it(tmp_path: Path):
+    engine, _ = _make_engine(tmp_path)
+    _seed(engine)
+
+    await engine.ingest_submissions(
+        "alice", [_sub(70, "two-sum", "Accepted", START + timedelta(minutes=1))]
+    )
+    assert engine.contest.participants["alice"].score == 1
+
+    await engine.set_problems([
+        Problem(title_slug="two-sum", difficulty=Difficulty.easy, points=9, order=0),
+    ])
+    assert engine.contest.participants["alice"].score == 9
+
+
+@pytest.mark.asyncio
+async def test_reopening_stamps_a_fresh_window(tmp_path: Path):
+    engine, _ = _make_engine(tmp_path)
+    _seed(engine, problems=[_problem("two-sum", Difficulty.easy, 1, 0)])
+
+    await engine.set_problem_open("two-sum", False)
+    problem = engine.contest.problems[0]
+    assert problem.is_open is False
+    assert problem.closed_at is not None
+
+    await engine.set_problem_open("two-sum", True)
+    problem = engine.contest.problems[0]
+    assert problem.is_open is True
+    assert problem.closed_at is None
+    assert problem.opened_at > START
+
+
+@pytest.mark.asyncio
+async def test_toggling_an_unknown_problem_raises(tmp_path: Path):
+    engine, _ = _make_engine(tmp_path)
+    _seed(engine)
+    with pytest.raises(KeyError):
+        await engine.set_problem_open("no-such-problem", True)
+
+
+@pytest.mark.asyncio
+async def test_public_board_only_shows_problems_that_have_been_opened(tmp_path: Path):
+    engine, _ = _make_engine(tmp_path)
+    _seed(engine, problems=[
+        _problem("two-sum", Difficulty.easy, 1, 0),
+        _problem("3sum", Difficulty.medium, 3, 1, opened_at=None),
+    ])
+
+    public = engine.snapshot_dict("public")["problems"]
+    admin = engine.snapshot_dict("admin")["problems"]
+    assert [p["title_slug"] for p in public] == ["two-sum"]
+    assert [p["title_slug"] for p in admin] == ["two-sum", "3sum"]
+
+
+@pytest.mark.asyncio
+async def test_a_closed_problem_stays_on_the_public_board(tmp_path: Path):
+    """Closing is how the teacher moves on, not how work disappears."""
+    engine, _ = _make_engine(tmp_path)
+    _seed(engine, problems=[_problem("two-sum", Difficulty.easy, 1, 0)])
+    await engine.set_problem_open("two-sum", False)
+
+    public = engine.snapshot_dict("public")["problems"]
+    assert [p["title_slug"] for p in public] == ["two-sum"]
+    assert public[0]["is_open"] is False
+
+
+# ---------------------------------------------------------------------------
+# Polling window + reset
+# ---------------------------------------------------------------------------
+
+@pytest.mark.asyncio
+async def test_polling_follows_the_problem_switches(tmp_path: Path):
+    engine, _ = _make_engine(tmp_path)
+    _seed(engine, problems=[_problem("two-sum", Difficulty.easy, 1, 0, opened_at=None)])
+    assert engine.is_polling_window() is False
+
+    await engine.set_problem_open("two-sum", True)
+    assert engine.is_polling_window() is True
+
+    await engine.set_problem_open("two-sum", False)
+    assert engine.is_polling_window() is True  # inside the grace period
+
+    engine.contest.problems[0].closed_at = datetime.now(timezone.utc) - timedelta(seconds=120)
+    assert engine.is_polling_window() is False  # grace expired
+
+
+@pytest.mark.asyncio
+async def test_reset_clears_scores_and_closes_every_window(tmp_path: Path):
+    engine, _ = _make_engine(tmp_path)
+    _seed(engine)
+    await engine.ingest_submissions(
+        "alice", [_sub(80, "two-sum", "Accepted", START + timedelta(minutes=1))]
+    )
+    assert engine.contest.participants["alice"].score == 1
+
+    await engine.reset_contest(keep_config=True)
+
+    alice = engine.contest.participants["alice"]
+    assert alice.score == 0
+    assert alice.solved_problems == set()
+    assert engine.contest.events == []
+    assert engine.contest.seen_submission_ids == set()
+    assert len(engine.contest.problems) == 4
+    assert all(
+        p.is_open is False and p.opened_at is None and p.closed_at is None
+        for p in engine.contest.problems
+    )
+    assert engine.is_polling_window() is False
+
+
 @pytest.mark.asyncio
 async def test_persistence_roundtrip(tmp_path: Path):
     engine, store = _make_engine(tmp_path)
-    start = datetime(2026, 1, 1, 10, tzinfo=timezone.utc)
-    end = start + timedelta(hours=2)
-    _seed(engine, start, end)
+    _seed(engine)
 
     await engine.ingest_submissions(
-        "alice",
-        [_sub(60, "trapping-rain-water", "Accepted", start + timedelta(minutes=20))],
+        "alice", [_sub(90, "trapping-rain-water", "Accepted", START + timedelta(minutes=20))]
     )
     await store.flush_now()
     assert store._path.exists()
 
     # New process simulation
-    bc2 = Broadcaster()
     cfg = Settings(admin_token="t", data_dir=tmp_path)
     store2 = ContestStore(cfg.state_file, cfg.state_backup_file)
     store2.load_sync()
     assert store2.contest.participants["alice"].score == 5
     assert "trapping-rain-water" in store2.contest.participants["alice"].solved_problems
+    assert store2.contest.problems[0].opened_at == START

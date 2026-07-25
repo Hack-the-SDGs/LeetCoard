@@ -1,9 +1,9 @@
 """ContestEngine — owns Contest mutations and is the single source of truth.
 
 All routes and the polling worker call into this class. It enforces:
-- state-machine transitions
-- contest-time gating on scoring
-- "at most one score per (user, problem)" invariant
+- each problem's own open window as the only scoring gate
+- "at most one base score per (user, problem)" invariant
+- score consistency whenever the problem set changes
 - snapshot publishing + persistence
 
 Frontends never compute scores or rank.
@@ -14,9 +14,8 @@ from __future__ import annotations
 import asyncio
 import hashlib
 import logging
-from collections import OrderedDict
 from datetime import datetime, timedelta, timezone
-from typing import Dict, List, Optional, Tuple
+from typing import List, Optional, Tuple
 
 from ..core.config import Settings
 from ..core.scoring import compute_beat_bonus
@@ -24,7 +23,6 @@ from ..core.sse import Broadcaster
 from ..core.storage import ContestStore
 from .models import (
     Contest,
-    ContestStatus,
     Difficulty,
     Participant,
     Problem,
@@ -76,10 +74,6 @@ def _hash_color(username: str) -> str:
     return f"oklch(72% 0.18 {hue})"
 
 
-class StartLockError(RuntimeError):
-    """Raised when an admin tries to mutate locked config after contest started."""
-
-
 class ContestEngine:
     def __init__(self, store: ContestStore, broadcaster: Broadcaster, settings: Settings):
         self._store = store
@@ -93,33 +87,19 @@ class ContestEngine:
     def contest(self) -> Contest:
         return self._store.contest
 
-    def _flag_dirty_and_broadcast(self, event: str, data: dict, audience: str = "all") -> None:
-        self._store.mark_dirty()
-        self._bc.broadcast(event, data, audience=audience)
-
     def _problems_for_audience(self, audience: str) -> List[dict]:
+        """Admins see every problem; the public board only sees problems that
+        have been opened at least once, so an unopened set can't be previewed
+        and a closed one never loses the scores already on it."""
         sorted_probs = sorted(self.contest.problems, key=lambda p: p.order)
-        if audience == "admin" or self.contest.status != ContestStatus.setup:
-            return [p.model_dump(mode="json") for p in sorted_probs]
-        # Public + setup: hide identifying fields. Keep difficulty/points so the
-        # scoreboard can size the card grid, but mask slug/title/frontend_id so
-        # spectators can't preview the set before the start signal.
-        out: List[dict] = []
-        for idx, p in enumerate(sorted_probs):
-            d = p.model_dump(mode="json")
-            d["title"] = None
-            d["frontend_id"] = None
-            d["title_slug"] = f"__hidden_{idx}__"
-            out.append(d)
-        return out
+        if audience != "admin":
+            sorted_probs = [p for p in sorted_probs if p.was_opened]
+        return [p.model_dump(mode="json") for p in sorted_probs]
 
     def snapshot_dict(self, audience: str = "public") -> dict:
         """Full state for new SSE subscribers."""
         c = self.contest
         payload = {
-            "status": c.status.value,
-            "start_time": c.start_time.isoformat() if c.start_time else None,
-            "end_time": c.end_time.isoformat() if c.end_time else None,
             "server_time": _utcnow().isoformat(),
             "problems": self._problems_for_audience(audience),
             "leaderboard": self._leaderboard_snapshot(),
@@ -135,8 +115,8 @@ class ContestEngine:
         self._bc.broadcast("leaderboard_update", {"leaderboard": self._leaderboard_snapshot()})
 
     def _broadcast_problems(self) -> None:
-        """Send problems_updated to admin (real data) and public (masked
-        during setup, real once running/ended)."""
+        """Send problems_updated to admin (every problem) and public (only the
+        ones that have been opened)."""
         self._bc.broadcast(
             "problems_updated",
             {"problems": self._problems_for_audience("admin")},
@@ -183,7 +163,7 @@ class ContestEngine:
                     "reached_current_score_at": p.reached_current_score_at.isoformat()
                     if p.reached_current_score_at
                     else None,
-                    # In-contest counts (only for tracked problems).
+                    # Practice-set counts (only for configured problems).
                     "easy_solved": counts[Difficulty.easy],
                     "medium_solved": counts[Difficulty.medium],
                     "hard_solved": counts[Difficulty.hard],
@@ -260,39 +240,124 @@ class ContestEngine:
                 self._store.mark_dirty()
                 self._broadcast_problems()
 
-    # -------- state transitions --------
+    # -------- score consistency --------
 
-    def _ensure_unlocked(self, what: str) -> None:
-        if self.contest.status in (ContestStatus.running, ContestStatus.ended):
-            raise StartLockError(f"{what} cannot be modified after contest has started")
+    def _recompute_scores(self) -> None:
+        """Rebuild every participant's score from stored per-problem facts.
 
-    def _ensure_unlocked_problems(self) -> None:
-        # Problems & times stay locked once running. Per user feedback,
-        # participants are intentionally allowed to change mid-contest.
-        if self.contest.status in (ContestStatus.running, ContestStatus.ended):
-            raise StartLockError("Problems cannot be modified after contest has started")
+        Called after any change to the problem set, because adding, deleting,
+        re-pointing or re-tiering a problem all change what a solve is worth.
+        Everything needed already lives on the participant (best beat %, first
+        AC time), so this never reads the capped event log.
+        """
+        by_slug = {p.title_slug: p for p in self.contest.problems}
+        for participant in self.contest.participants.values():
+            for slug in participant.solved_problems - by_slug.keys():
+                participant.solved_problems.discard(slug)
+                participant.problem_first_ac_at.pop(slug, None)
+                participant.problem_bonus_pts.pop(slug, None)
+                participant.problem_best_beat_pct.pop(slug, None)
+                participant.problem_best_submission_id.pop(slug, None)
+
+            total = 0
+            for slug in participant.solved_problems:
+                problem = by_slug[slug]
+                bonus = compute_beat_bonus(
+                    participant.problem_best_beat_pct.get(slug), problem.beat_bonus_tiers
+                )
+                participant.problem_bonus_pts[slug] = bonus
+                total += problem.points + bonus
+            participant.score = total
+
+            ac_times = [
+                participant.problem_first_ac_at[slug]
+                for slug in participant.solved_problems
+                if slug in participant.problem_first_ac_at
+            ]
+            participant.reached_current_score_at = max(ac_times) if ac_times else None
+
+    # -------- problems --------
 
     async def set_problems(self, problems: List[Problem]) -> Tuple[List[str], List[str]]:
-        """Returns (added_slugs, removed_slugs) for callers that want diff info."""
+        """Replace the problem list. Returns (added_slugs, removed_slugs).
+
+        Editing the list never disturbs a live window: problems that survive
+        keep their is_open / opened_at / closed_at, so saving a typo fix in the
+        middle of a session doesn't silently close everything.
+        """
         async with self._lock:
-            self._ensure_unlocked_problems()
-            seen_slugs = set()
+            seen_slugs: set[str] = set()
             for p in problems:
                 if p.title_slug in seen_slugs:
                     raise ValueError(f"Duplicate problem slug: {p.title_slug}")
                 seen_slugs.add(p.title_slug)
-            old_slugs = {p.title_slug for p in self.contest.problems}
-            new_slugs = {p.title_slug for p in problems}
-            added = sorted(new_slugs - old_slugs)
-            removed = sorted(old_slugs - new_slugs)
-            self.contest.problems = sorted(problems, key=lambda p: p.order)
+
+            existing = {p.title_slug: p for p in self.contest.problems}
+            merged: List[Problem] = []
+            for p in problems:
+                prev = existing.get(p.title_slug)
+                if prev is not None:
+                    p = p.model_copy(
+                        update={
+                            "is_open": prev.is_open,
+                            "opened_at": prev.opened_at,
+                            "closed_at": prev.closed_at,
+                        }
+                    )
+                merged.append(p)
+
+            added = sorted(seen_slugs - existing.keys())
+            removed = sorted(existing.keys() - seen_slugs)
+
+            self.contest.problems = sorted(merged, key=lambda p: p.order)
+            self._recompute_scores()
             self._store.mark_dirty()
             self._broadcast_problems()
+            self._push_leaderboard()
         return added, removed
 
+    def _apply_open(self, problem: Problem, is_open: bool) -> bool:
+        """Toggle one problem's window. Returns True when something changed.
+
+        Opening restarts the window from now, so an AC made while the problem
+        was closed can never be back-credited. Closing records the moment
+        rather than dropping the door, so a submission made a second earlier
+        still scores when the next poll finds it.
+        """
+        if problem.is_open == is_open:
+            return False
+        problem.is_open = is_open
+        if is_open:
+            problem.opened_at = _utcnow()
+            problem.closed_at = None
+        else:
+            problem.closed_at = _utcnow()
+        return True
+
+    async def set_problem_open(self, title_slug: str, is_open: bool) -> Problem:
+        async with self._lock:
+            problem = next(
+                (p for p in self.contest.problems if p.title_slug == title_slug), None
+            )
+            if problem is None:
+                raise KeyError(title_slug)
+            if self._apply_open(problem, is_open):
+                self._store.mark_dirty()
+                self._broadcast_problems()
+            return problem
+
+    async def set_all_problems_open(self, is_open: bool) -> int:
+        async with self._lock:
+            changed = sum(self._apply_open(p, is_open) for p in self.contest.problems)
+            if changed:
+                self._store.mark_dirty()
+                self._broadcast_problems()
+            return changed
+
+    # -------- participants --------
+
     async def upsert_participants(self, rows: List[Tuple[str, str]]) -> Tuple[int, int, List[str], List[str]]:
-        """Bulk add/update; returns (created, updated, errors, new_usernames).
-        Participants are intentionally NOT locked during running."""
+        """Bulk add/update; returns (created, updated, errors, new_usernames)."""
         created = 0
         updated = 0
         errors: List[str] = []
@@ -340,65 +405,21 @@ class ContestEngine:
             self._broadcast_participants_admin()
         self._push_leaderboard()
 
-    async def set_times(self, start: Optional[datetime], end: Optional[datetime]) -> None:
-        async with self._lock:
-            self._ensure_unlocked("Times")
-            if start and end and end <= start:
-                raise ValueError("End time must be strictly after start time")
-            self.contest.start_time = start
-            self.contest.end_time = end
-            self._flag_dirty_and_broadcast(
-                "times_updated",
-                {
-                    "start_time": start.isoformat() if start else None,
-                    "end_time": end.isoformat() if end else None,
-                },
-            )
-
-    async def set_status(self, status: ContestStatus) -> None:
-        """Used internally for transitions; routes go through start/end."""
-        async with self._lock:
-            self.contest.status = status
-            self._flag_dirty_and_broadcast(
-                "contest_status",
-                {
-                    "status": status.value,
-                    "start_time": self.contest.start_time.isoformat()
-                    if self.contest.start_time
-                    else None,
-                    "end_time": self.contest.end_time.isoformat()
-                    if self.contest.end_time
-                    else None,
-                },
-            )
-
-    async def start_contest(self) -> None:
-        async with self._lock:
-            if self.contest.status != ContestStatus.setup:
-                raise ValueError(f"Cannot start from status {self.contest.status.value}")
-            if not self.contest.start_time or not self.contest.end_time:
-                raise ValueError("Start and end times must be set before starting")
-            if not self.contest.problems:
-                raise ValueError("At least one problem must be configured")
-            if not self.contest.participants:
-                raise ValueError("At least one participant must be added")
-            self.contest.status = ContestStatus.running
-            self.contest.last_started_at = _utcnow()
-        await self.set_status(ContestStatus.running)
-        # Reveal problems to the public stream now that the contest is live.
-        self._broadcast_problems()
-        await self._store.flush_now()
-
-    async def end_contest(self) -> None:
-        async with self._lock:
-            self.contest.status = ContestStatus.ended
-            self.contest.last_ended_at = _utcnow()
-        await self.set_status(ContestStatus.ended)
-        await self._store.flush_now()
+    # -------- reset --------
 
     async def reset_contest(self, *, keep_config: bool) -> None:
+        """Wipe scores, events and dedupe state. Problems and the roster stay,
+        but every window is closed and cleared so the board is back at a clean
+        starting line rather than half-open with orphaned timestamps."""
         async with self._lock:
-            problems = list(self.contest.problems) if keep_config else []
+            problems = (
+                [
+                    p.model_copy(update={"is_open": False, "opened_at": None, "closed_at": None})
+                    for p in self.contest.problems
+                ]
+                if keep_config
+                else []
+            )
             participants = (
                 {
                     u: Participant(
@@ -419,11 +440,8 @@ class ContestEngine:
             )
             self._store.replace_contest(
                 Contest(
-                    status=ContestStatus.setup,
                     problems=problems,
                     participants=participants,
-                    start_time=None,
-                    end_time=None,
                     last_reset_at=_utcnow(),
                 )
             )
@@ -450,6 +468,9 @@ class ContestEngine:
 
         `raw_submissions` is the list returned by `/user/{username}/submissions`,
         each containing at least: id, statusDisplay, titleSlug, timestamp.
+
+        Submissions to anything outside the configured problem set are dropped
+        entirely — students practising other problems must not flood the feed.
         """
 
         if not raw_submissions:
@@ -466,113 +487,69 @@ class ContestEngine:
                 sub_id = str(sub.get("id") or "")
                 if not sub_id or sub_id in self.contest.seen_submission_ids:
                     continue
+                # Always mark seen so we don't reprocess on the next poll.
+                self.contest.seen_submission_ids.add(sub_id)
+
                 slug = sub.get("titleSlug") or sub.get("title_slug")
                 status_disp = sub.get("statusDisplay") or sub.get("status") or "Other"
                 ts_raw = sub.get("timestamp")
                 if not slug or ts_raw is None:
-                    self.contest.seen_submission_ids.add(sub_id)
                     continue
                 try:
                     submitted_at = datetime.fromtimestamp(int(ts_raw), tz=timezone.utc)
                 except (TypeError, ValueError):
-                    self.contest.seen_submission_ids.add(sub_id)
                     continue
 
-                # Always mark seen so we don't reprocess on next poll.
-                self.contest.seen_submission_ids.add(sub_id)
-
                 problem = tracked.get(slug)
-                is_tracked = problem is not None
+                if problem is None:
+                    continue
 
                 is_accepted = status_disp == SubmissionStatus.accepted.value
                 is_scoring = False
-                is_overflow = False
                 points_delta = 0
                 bonus_delta = 0
                 beat_pct: Optional[float] = None
                 note: Optional[str] = None
 
-                # Time-window gating — even AC outside window does not score.
-                in_window = (
-                    self.contest.start_time is not None
-                    and self.contest.end_time is not None
-                    and self.contest.start_time <= submitted_at <= self.contest.end_time
-                )
-
-                if not is_tracked:
-                    # Untracked problem: emit as informational event (admin only
-                    # cares about these), but only once the contest start time
-                    # has elapsed so the dashboard isn't flooded by warmup runs.
-                    if (
-                        self.contest.start_time is None
-                        or submitted_at < self.contest.start_time
-                    ):
-                        continue
-                    if is_accepted:
-                        beat_pct = _extract_beat_pct(sub)
-                    evt = SubmissionEvent(
-                        submission_id=sub_id,
-                        username=username,
-                        student_id=participant.student_id,
-                        title_slug=slug,
-                        title=sub.get("title") or slug,
-                        status=status_disp,
-                        short_label=_short_label(status_disp),
-                        submitted_at=submitted_at,
-                        points_delta=0,
-                        bonus_delta=0,
-                        beat_pct=beat_pct,
-                        is_accepted=is_accepted,
-                        is_scoring=False,
-                        is_overflow=False,
-                        is_tracked=False,
-                    )
-                    self.contest.events.append(evt)
-                    new_events.append(evt)
-                    continue
-
                 if is_accepted:
                     beat_pct = _extract_beat_pct(sub)
-                    new_bonus = compute_beat_bonus(beat_pct, problem.beat_bonus_tiers)
-
-                    if not in_window:
-                        note = "outside contest window"
+                    if not problem.accepts(submitted_at):
+                        note = "problem closed"
                     else:
-                        # Bump the in-window AC counter; only the first 3 AC
-                        # submissions per (user, problem) can move the bonus.
-                        new_count = participant.problem_ac_count.get(slug, 0) + 1
-                        participant.problem_ac_count[slug] = new_count
+                        new_bonus = compute_beat_bonus(beat_pct, problem.beat_bonus_tiers)
+                        best_so_far = participant.problem_best_beat_pct.get(slug)
 
                         if slug not in participant.solved_problems:
-                            # First AC — base points + initial bonus.
+                            # First AC inside the window — base points + bonus.
                             is_scoring = True
                             bonus_delta = new_bonus
                             points_delta = problem.points + bonus_delta
                             participant.solved_problems.add(slug)
                             participant.problem_first_ac_at[slug] = submitted_at
                             participant.problem_bonus_pts[slug] = new_bonus
+                            participant.problem_best_submission_id[slug] = sub_id
                             if beat_pct is not None:
                                 participant.problem_best_beat_pct[slug] = beat_pct
                             participant.score += points_delta
                             participant.reached_current_score_at = submitted_at
-                        elif new_count <= 3:
-                            # 2nd or 3rd AC — may upgrade if beat % improved.
+                        else:
+                            # Re-AC. There is no attempt limit: every resubmit
+                            # can improve the recorded runtime, and crossing
+                            # into a higher tier tops up the difference.
+                            if beat_pct is not None and (
+                                best_so_far is None or beat_pct > best_so_far
+                            ):
+                                participant.problem_best_beat_pct[slug] = beat_pct
+                                participant.problem_best_submission_id[slug] = sub_id
                             old_bonus = participant.problem_bonus_pts.get(slug, 0)
                             if new_bonus > old_bonus:
                                 is_scoring = True
                                 bonus_delta = new_bonus - old_bonus
                                 points_delta = bonus_delta
                                 participant.problem_bonus_pts[slug] = new_bonus
-                                if beat_pct is not None:
-                                    participant.problem_best_beat_pct[slug] = max(
-                                        participant.problem_best_beat_pct.get(slug, 0.0), beat_pct,
-                                    )
                                 participant.score += bonus_delta
                                 participant.reached_current_score_at = submitted_at
                                 note = f"bonus +{old_bonus}→+{new_bonus}"
-                        else:
-                            # 4th+ AC — locked in, never updates the bonus.
-                            is_overflow = True
 
                 evt = SubmissionEvent(
                     submission_id=sub_id,
@@ -588,8 +565,6 @@ class ContestEngine:
                     beat_pct=beat_pct,
                     is_accepted=is_accepted,
                     is_scoring=is_scoring,
-                    is_overflow=is_overflow,
-                    is_tracked=True,
                     note=note,
                 )
                 self.contest.events.append(evt)
@@ -610,19 +585,20 @@ class ContestEngine:
         if any(e.is_scoring for e in new_events):
             self._push_leaderboard()
 
-    # -------- contest-time helpers used by routes / workers --------
+    # -------- helpers used by routes / workers --------
+
+    def open_problem_count(self) -> int:
+        return sum(1 for p in self.contest.problems if p.is_open)
 
     def is_polling_window(self) -> bool:
-        c = self.contest
-        if c.status == ContestStatus.running:
+        """Poll while any problem is open, plus a grace period after the last
+        one closes so late-arriving submissions still land."""
+        if any(p.is_open for p in self.contest.problems):
             return True
-        if c.status == ContestStatus.ended and c.last_ended_at:
-            return _utcnow() - c.last_ended_at < timedelta(seconds=self._cfg.post_end_grace_sec)
-        return False
-
-    def is_within_contest_window(self, t: datetime) -> bool:
-        c = self.contest
-        return bool(c.start_time and c.end_time and c.start_time <= t <= c.end_time)
+        closed_times = [p.closed_at for p in self.contest.problems if p.closed_at is not None]
+        if not closed_times:
+            return False
+        return _utcnow() - max(closed_times) < timedelta(seconds=self._cfg.post_end_grace_sec)
 
     def usernames(self) -> List[str]:
         return list(self.contest.participants.keys())

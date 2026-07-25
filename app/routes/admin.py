@@ -8,28 +8,21 @@ from __future__ import annotations
 import csv
 import io
 import json
-from datetime import datetime
 from typing import List, Optional
 
-from fastapi import APIRouter, Depends, HTTPException, Request, status
+from fastapi import APIRouter, Depends, HTTPException, Request
 from pydantic import BaseModel, Field
 from sse_starlette.sse import EventSourceResponse
 
 from ..core.auth import admin_token_for_sse, require_admin
 from ..core.sse import broadcaster
 from ..domain.models import Difficulty, Problem
-from ..domain.state import StartLockError
 
 
 router = APIRouter()
 
 
 # ---- Request / Response models ----------------------------------------------
-
-class TimesIn(BaseModel):
-    start_time: Optional[datetime] = None
-    end_time: Optional[datetime] = None
-
 
 class BonusTierIn(BaseModel):
     min_beat_pct: float = Field(ge=0.0, le=100.0)
@@ -49,6 +42,10 @@ class ProblemIn(BaseModel):
 
 class ProblemsIn(BaseModel):
     problems: List[ProblemIn]
+
+
+class ProblemOpenIn(BaseModel):
+    open: bool
 
 
 class ParticipantsBulkIn(BaseModel):
@@ -108,18 +105,6 @@ async def admin_stream(request: Request, _: bool = Depends(admin_token_for_sse))
     return EventSourceResponse(event_gen(), ping=15)
 
 
-# ---- Times ------------------------------------------------------------------
-
-@router.put("/times")
-async def set_times(body: TimesIn, request: Request, _: None = Depends(require_admin)) -> dict:
-    engine = request.app.state.engine
-    try:
-        await engine.set_times(body.start_time, body.end_time)
-    except (ValueError, StartLockError) as exc:
-        raise HTTPException(status_code=400, detail=str(exc))
-    return {"ok": True}
-
-
 # ---- Problems ---------------------------------------------------------------
 
 @router.put("/problems")
@@ -147,10 +132,41 @@ async def set_problems(body: ProblemsIn, request: Request, _: None = Depends(req
         problems.append(prob)
     try:
         added, removed = await engine.set_problems(problems)
-    except (ValueError, StartLockError) as exc:
+    except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc))
 
     return {"ok": True, "count": len(problems), "added": added, "removed": removed}
+
+
+@router.put("/problems/open-all")
+async def set_all_problems_open(
+    body: ProblemOpenIn, request: Request, _: None = Depends(require_admin)
+) -> dict:
+    """Open or close every problem in one go."""
+    engine = request.app.state.engine
+    changed = await engine.set_all_problems_open(body.open)
+    return {"ok": True, "open": body.open, "changed": changed}
+
+
+@router.put("/problems/{title_slug}/open")
+async def set_problem_open(
+    title_slug: str, body: ProblemOpenIn, request: Request, _: None = Depends(require_admin)
+) -> dict:
+    """Open or close one problem. This is the live switch the teacher uses
+    during a session — it takes effect immediately and never touches the rest
+    of the problem list."""
+    engine = request.app.state.engine
+    try:
+        problem = await engine.set_problem_open(title_slug, body.open)
+    except KeyError:
+        raise HTTPException(status_code=404, detail="problem not found")
+    return {
+        "ok": True,
+        "title_slug": problem.title_slug,
+        "is_open": problem.is_open,
+        "opened_at": problem.opened_at.isoformat() if problem.opened_at else None,
+        "closed_at": problem.closed_at.isoformat() if problem.closed_at else None,
+    }
 
 
 # ---- Participants -----------------------------------------------------------
@@ -171,10 +187,7 @@ async def bulk_upsert(body: ParticipantsBulkIn, request: Request, _: None = Depe
             line_errors.append(f"line {idx}: needs `username,student_id`")
             continue
         rows.append((cleaned[0], cleaned[1]))
-    try:
-        created, updated, errors, new_users = await engine.upsert_participants(rows)
-    except StartLockError as exc:
-        raise HTTPException(status_code=400, detail=str(exc))
+    created, updated, errors, new_users = await engine.upsert_participants(rows)
 
     # Auto-trigger profile fetch for new users.
     polling = request.app.state.polling_worker
@@ -193,36 +206,13 @@ async def bulk_upsert(body: ParticipantsBulkIn, request: Request, _: None = Depe
 @router.delete("/participants/{username}")
 async def delete_participant(username: str, request: Request, _: None = Depends(require_admin)) -> dict:
     engine = request.app.state.engine
-    try:
-        existed = await engine.remove_participant(username)
-    except StartLockError as exc:
-        raise HTTPException(status_code=400, detail=str(exc))
+    existed = await engine.remove_participant(username)
     if not existed:
         raise HTTPException(status_code=404, detail="participant not found")
     return {"ok": True}
 
 
-# ---- Lifecycle controls -----------------------------------------------------
-
-@router.post("/contest/start")
-async def start_contest(request: Request, _: None = Depends(require_admin)) -> dict:
-    engine = request.app.state.engine
-    try:
-        await engine.start_contest()
-    except (ValueError, StartLockError) as exc:
-        raise HTTPException(status_code=400, detail=str(exc))
-    return {"ok": True, "status": engine.contest.status.value}
-
-
-@router.post("/contest/end")
-async def end_contest(request: Request, _: None = Depends(require_admin)) -> dict:
-    engine = request.app.state.engine
-    try:
-        await engine.end_contest()
-    except ValueError as exc:
-        raise HTTPException(status_code=400, detail=str(exc))
-    return {"ok": True, "status": engine.contest.status.value}
-
+# ---- Reset ------------------------------------------------------------------
 
 @router.post("/contest/reset")
 async def reset_contest(body: ResetIn, request: Request, _: None = Depends(require_admin)) -> dict:
@@ -238,4 +228,4 @@ async def reset_contest(body: ResetIn, request: Request, _: None = Depends(requi
         for u in engine.contest.participants:
             polling.enqueue_profile_fetch(u)
 
-    return {"ok": True, "status": engine.contest.status.value, "keep_config": body.keep_config}
+    return {"ok": True, "keep_config": body.keep_config}
