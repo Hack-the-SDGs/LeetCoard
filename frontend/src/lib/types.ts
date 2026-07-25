@@ -20,7 +20,6 @@ export interface SolverPayload {
   avatar_url: string | null;
   beat_pct: number | null; // runtime percentile; null when no session cookie
   solved_at: string | null;
-  submission_id: string | null;
 }
 
 export interface ProblemPayload {
@@ -116,4 +115,10 @@ export interface PollingStatus {
   open_problems: number;
   tracked_users: number;
   active_users: number;
+}
+
+export interface ViewPasswordState {
+  password: string;
+  required: boolean;
+  overridden: boolean;
 }

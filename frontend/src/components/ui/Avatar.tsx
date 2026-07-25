@@ -1,8 +1,12 @@
+import { profileUrl } from "../../lib/leetcode";
+
 interface Props {
   nickname: string;
   avatarUrl: string | null;
   color: string;
   size: number;
+  /** LeetCode handle. When given, the portrait links to that public profile. */
+  profileFor?: string | null;
 }
 
 /**
@@ -12,8 +16,8 @@ interface Props {
  * doubled with the page ground so two markers can sit shoulder to shoulder on
  * a percentile track without their rings bleeding into one another.
  */
-export default function Avatar({ nickname, avatarUrl, color, size }: Props) {
-  return (
+export default function Avatar({ nickname, avatarUrl, color, size, profileFor }: Props) {
+  const portrait = (
     <span
       className="inline-block shrink-0 overflow-hidden rounded-full bg-ink-800"
       style={{
@@ -33,5 +37,19 @@ export default function Avatar({ nickname, avatarUrl, color, size }: Props) {
         </span>
       )}
     </span>
+  );
+
+  if (!profileFor) return portrait;
+
+  return (
+    <a
+      href={profileUrl(profileFor)}
+      target="_blank"
+      rel="noopener noreferrer"
+      title={`看 ${nickname} 的 LeetCode 個人頁`}
+      className="inline-flex rounded-full transition-opacity hover:opacity-80"
+    >
+      {portrait}
+    </a>
   );
 }

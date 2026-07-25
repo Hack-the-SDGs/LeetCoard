@@ -11,16 +11,15 @@ interface Props {
 }
 
 /** Axis line, ticks and their labels. Markers stand on top of this. */
-const AXIS_HEIGHT = 20;
-/** Avatar + one label line, plus air. Lanes must not let markers touch. */
-const LANE_HEIGHT = 54;
+const AXIS_HEIGHT = 18;
+/** Avatar plus one label line, with just enough air to not touch. */
+const LANE_HEIGHT = 40;
 /** Room for the leader's tag above the top lane. */
-const CROWN_HEIGHT = 12;
-/** Name plus percentile, with breathing room on both sides. */
-const MARKER_WIDTH = 84;
+const CROWN_HEIGHT = 11;
+/** Past this many solvers the percentile digits come off the labels. */
+const CROWD_THRESHOLD = 24;
 const MARKER_GAP = 8;
-/** Used until the track has been measured, and as a floor afterwards. */
-const FALLBACK_GAP_PCT = 8;
+const FALLBACK_GAP_PCT = 6;
 /** Beyond this a narrow screen would spawn a lane per solver. */
 const MAX_GAP_PCT = 25;
 const SETTLE = { type: "tween", ease: [0.2, 0, 0, 1], duration: 0.5 } as const;
@@ -38,10 +37,9 @@ interface Placed {
  * a percentage threshold that clears on a 1920 projector has labels touching on
  * a 1440 laptop. Deriving it from the measured width keeps both honest.
  */
-function gapPctFor(trackWidth: number): number {
+function gapPctFor(trackWidth: number, markerWidth: number): number {
   if (trackWidth <= 0) return FALLBACK_GAP_PCT;
-  const needed = ((MARKER_WIDTH + MARKER_GAP) / trackWidth) * 100;
-  return Math.min(MAX_GAP_PCT, needed);
+  return Math.min(MAX_GAP_PCT, ((markerWidth + MARKER_GAP) / trackWidth) * 100);
 }
 
 function useTrackWidth() {
@@ -76,10 +74,6 @@ function packLanes(solvers: SolverPayload[], minGapPct: number): Placed[] {
   });
 }
 
-function submissionUrl(id: string | null): string | null {
-  return id ? `https://leetcode.com/submissions/detail/${id}/` : null;
-}
-
 /**
  * A problem's solvers plotted on a 0–100 runtime-percentile track.
  *
@@ -98,7 +92,7 @@ export default function PercentileTrack({ solvers, colors, dimmed }: Props) {
   const unranked = solvers.filter((s) => s.beat_pct == null);
 
   if (solvers.length === 0) {
-    return <p className="py-4 text-[13px] text-paper-faint">還沒有人解出這題</p>;
+    return <p className="py-2 text-[12px] text-paper-faint">還沒有人解出這題</p>;
   }
 
   // No session cookie upstream means no percentiles at all. Fall back to a
@@ -107,9 +101,24 @@ export default function PercentileTrack({ solvers, colors, dimmed }: Props) {
     return <SolverRow solvers={unranked} colors={colors} label="已解出" />;
   }
 
-  const placed = packLanes(ranked, gapPctFor(trackWidth));
-  const laneCount = placed.reduce((max, p) => Math.max(max, p.lane), 0) + 1;
+  // With a full class on one problem the digits stop earning their width:
+  // names are what people look for, and the position already says the rest.
+  const crowded = ranked.length > CROWD_THRESHOLD;
+  const markerWidth = crowded ? 56 : 76;
+
   const leader = ranked[0];
+  const packed = packLanes(ranked, gapPctFor(trackWidth, markerWidth));
+  const topLane = packed.reduce((max, p) => Math.max(max, p.lane), 0);
+
+  // The leader wears a tag above its portrait, which needs the space a lane
+  // above would occupy. Lifting the leader to the top lane guarantees that
+  // clearance and reads the way it should anyway: fastest stands highest.
+  const leaderLane = packed.find((p) => p.solver.username === leader.username)?.lane ?? 0;
+  const needsLift = leaderLane < topLane;
+  const placed = needsLift
+    ? packed.map((p) => (p.solver.username === leader.username ? { ...p, lane: topLane + 1 } : p))
+    : packed;
+  const laneCount = (needsLift ? topLane + 1 : topLane) + 1;
   const height = AXIS_HEIGHT + laneCount * LANE_HEIGHT + CROWN_HEIGHT;
 
   return (
@@ -119,26 +128,7 @@ export default function PercentileTrack({ solvers, colors, dimmed }: Props) {
           {placed.map(({ solver, lane }) => {
             const pct = solver.beat_pct as number;
             const color = teamColor(solver.group_id, colors);
-            const href = submissionUrl(solver.submission_id);
             const isLeader = solver.username === leader.username;
-            const marker = (
-              <>
-                <Avatar
-                  nickname={solver.nickname}
-                  avatarUrl={solver.avatar_url}
-                  color={color}
-                  size={30}
-                />
-                <span className="mt-1 flex max-w-full items-baseline gap-1 whitespace-nowrap">
-                  <span className="truncate text-[12px] font-bold leading-none">
-                    {solver.nickname}
-                  </span>
-                  <span className="tnum font-mono text-[10px] leading-none text-paper-faint">
-                    {pct.toFixed(1)}
-                  </span>
-                </span>
-              </>
-            );
             return (
               <motion.div
                 key={solver.username}
@@ -147,25 +137,38 @@ export default function PercentileTrack({ solvers, colors, dimmed }: Props) {
                 className="absolute"
                 style={{ left: `${pct}%`, bottom: AXIS_HEIGHT + lane * LANE_HEIGHT }}
               >
-                <div className="relative flex w-[84px] -translate-x-1/2 flex-col items-center">
+                <div
+                  className="relative flex -translate-x-1/2 flex-col items-center"
+                  style={{ width: markerWidth }}
+                >
                   {isLeader && (
-                    <span className="mb-1 bg-paper px-1 font-mono text-[8px] font-bold tracking-label text-ink-950">
-                      LEAD
+                    // The leader's percentile rides in the tag rather than on
+                    // the name line: inline it overflows the marker cell and
+                    // truncates the name it sits next to.
+                    <span className="tnum mb-[3px] whitespace-nowrap bg-paper px-1 font-mono text-[8px] font-bold leading-[10px] tracking-label text-ink-950">
+                      LEAD {pct.toFixed(1)}
                     </span>
                   )}
-                  {href ? (
-                    <a
-                      href={href}
-                      target="_blank"
-                      rel="noopener noreferrer"
-                      title={`看 ${solver.nickname} 的提交（beats ${pct.toFixed(1)}%）`}
-                      className="flex flex-col items-center"
-                    >
-                      {marker}
-                    </a>
-                  ) : (
-                    <div className="flex flex-col items-center">{marker}</div>
-                  )}
+                  <Avatar
+                    nickname={solver.nickname}
+                    avatarUrl={solver.avatar_url}
+                    color={color}
+                    size={24}
+                    profileFor={solver.username}
+                  />
+                  <span
+                    className="mt-[3px] flex max-w-full items-baseline gap-1 whitespace-nowrap"
+                    title={`${solver.nickname} · beats ${pct.toFixed(1)}%`}
+                  >
+                    <span className="truncate text-[11px] font-bold leading-none">
+                      {solver.nickname}
+                    </span>
+                    {!crowded && !isLeader && (
+                      <span className="tnum font-mono text-[9px] leading-none text-paper-faint">
+                        {pct.toFixed(1)}
+                      </span>
+                    )}
+                  </span>
                   {lane > 0 && (
                     <span
                       aria-hidden="true"
@@ -185,16 +188,16 @@ export default function PercentileTrack({ solvers, colors, dimmed }: Props) {
             {TICKS.map((tick) => (
               <span
                 key={tick}
-                className="absolute top-0 h-[5px] w-px bg-paper-faint"
+                className="absolute top-0 h-[4px] w-px bg-paper-faint"
                 style={{ left: `${tick}%` }}
               />
             ))}
           </div>
-          <div className="relative mt-[7px] h-3">
+          <div className="relative mt-[6px] h-3">
             {TICKS.map((tick) => (
               <span
                 key={tick}
-                className="tnum absolute -translate-x-1/2 font-mono text-[10px] leading-none text-paper-faint"
+                className="tnum absolute -translate-x-1/2 font-mono text-[9px] leading-none text-paper-faint"
                 style={{ left: `${tick}%` }}
               >
                 {tick}
@@ -225,40 +228,22 @@ function SolverRow({
   return (
     <div
       className={
-        "flex flex-wrap items-start gap-x-4 gap-y-3 " + (bordered ? "rule-t mt-3 pt-3" : "py-2")
+        "flex flex-wrap items-center gap-x-3 gap-y-2 " + (bordered ? "rule-t mt-2 pt-2" : "py-1.5")
       }
     >
-      <span className="mt-2 font-mono text-[9px] tracking-label text-paper-faint">{label}</span>
-      {solvers.map((solver) => {
-        const color = teamColor(solver.group_id, colors);
-        const href = submissionUrl(solver.submission_id);
-        const body = (
-          <div className="flex w-[72px] flex-col items-center">
-            <Avatar
-              nickname={solver.nickname}
-              avatarUrl={solver.avatar_url}
-              color={color}
-              size={26}
-            />
-            <span className="mt-1 max-w-full truncate text-[12px] font-bold leading-none">
-              {solver.nickname}
-            </span>
-          </div>
-        );
-        return href ? (
-          <a
-            key={solver.username}
-            href={href}
-            target="_blank"
-            rel="noopener noreferrer"
-            title={`看 ${solver.nickname} 的提交`}
-          >
-            {body}
-          </a>
-        ) : (
-          <div key={solver.username}>{body}</div>
-        );
-      })}
+      <span className="font-mono text-[9px] tracking-label text-paper-faint">{label}</span>
+      {solvers.map((solver) => (
+        <span key={solver.username} className="flex items-center gap-1.5">
+          <Avatar
+            nickname={solver.nickname}
+            avatarUrl={solver.avatar_url}
+            color={teamColor(solver.group_id, colors)}
+            size={20}
+            profileFor={solver.username}
+          />
+          <span className="text-[11px] font-bold leading-none">{solver.nickname}</span>
+        </span>
+      ))}
     </div>
   );
 }

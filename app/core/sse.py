@@ -25,6 +25,7 @@ class _Subscriber:
     queue: asyncio.Queue
     audience: str = "public"  # "public" or "admin"
     dropped: int = 0
+    closed: bool = False
 
 
 @dataclass
@@ -73,6 +74,24 @@ class Broadcaster:
                 except asyncio.QueueFull:
                     sub.dropped += 1
 
+    async def close_audience(self, audience: str) -> None:
+        """Hang up on everyone in `audience`.
+
+        Used when the view password changes: without this, viewers who were
+        already connected would keep receiving the board and the new password
+        would only apply to people arriving afterwards.
+        """
+        async with self._lock:
+            targets = [s for s in self.subs if s.audience == audience]
+        for sub in targets:
+            sub.closed = True
+            try:
+                sub.queue.put_nowait({"event": "closed", "data": {}})
+            except asyncio.QueueFull:
+                pass
+        if targets:
+            log.info("SSE closing %d %s subscriber(s)", len(targets), audience)
+
     async def stream(self, sub: _Subscriber) -> AsyncIterator[Dict[str, str]]:
         """Yield SSE-shaped dicts (sse-starlette consumes `{event, data}`)."""
 
@@ -80,13 +99,21 @@ class Broadcaster:
             while True:
                 try:
                     item = await asyncio.wait_for(sub.queue.get(), timeout=15.0)
-                    yield {
-                        "event": item["event"],
-                        "data": json.dumps(item["data"], ensure_ascii=False, default=str),
-                    }
                 except asyncio.TimeoutError:
+                    if sub.closed:
+                        break
                     # Heartbeat — keeps proxies from killing the connection.
                     yield {"event": "ping", "data": json.dumps({"ts": _now_iso()})}
+                    continue
+                # Deliver what we already have in hand before hanging up, so a
+                # closing client gets the `closed` event and can re-authenticate
+                # immediately instead of waiting out a blind reconnect.
+                yield {
+                    "event": item["event"],
+                    "data": json.dumps(item["data"], ensure_ascii=False, default=str),
+                }
+                if sub.closed:
+                    break
         finally:
             await self.unsubscribe(sub)
 

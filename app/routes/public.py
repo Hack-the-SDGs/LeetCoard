@@ -1,23 +1,30 @@
-"""Public, read-only endpoints for the projector scoreboard."""
+"""Public, read-only endpoints for the projector scoreboard.
+
+Both data endpoints sit behind the view password when one is set, so a class
+can't read each other's work straight off the API.
+"""
 
 from __future__ import annotations
 
-from fastapi import APIRouter, Request
+import json
+
+from fastapi import APIRouter, Depends, Request
 from sse_starlette.sse import EventSourceResponse
 
+from ..core.auth import require_view
 from ..core.sse import broadcaster
 
 router = APIRouter()
 
 
 @router.get("/snapshot")
-async def snapshot(request: Request) -> dict:
+async def snapshot(request: Request, _: None = Depends(require_view)) -> dict:
     engine = request.app.state.engine
     return engine.snapshot_dict(audience="public")
 
 
 @router.get("/stream")
-async def stream(request: Request):
+async def stream(request: Request, _: None = Depends(require_view)):
     engine = request.app.state.engine
     sub = await broadcaster.subscribe(audience="public")
 
@@ -36,11 +43,17 @@ async def stream(request: Request):
 
 
 def _json(obj) -> str:
-    import json
-
     return json.dumps(obj, ensure_ascii=False, default=str)
 
 
 @router.get("/health")
 async def health() -> dict:
     return {"ok": True}
+
+
+@router.get("/view-required")
+async def view_required(request: Request) -> dict:
+    """Whether the board asks for a password. Deliberately unauthenticated so
+    the scoreboard knows whether to show the prompt before it has one."""
+    gate = request.app.state.view_gate
+    return {"required": not gate.is_open}

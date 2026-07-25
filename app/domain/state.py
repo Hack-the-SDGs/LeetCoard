@@ -104,7 +104,6 @@ class ContestEngine:
                     "avatar_url": p.avatar_url,
                     "beat_pct": p.problem_best_beat_pct.get(slug),
                     "solved_at": solved_at.isoformat() if solved_at else None,
-                    "submission_id": p.problem_best_submission_id.get(slug),
                 }
             )
         # Fastest runtime leads; unknown percentiles sink to the end.
@@ -346,7 +345,6 @@ class ContestEngine:
                 participant.problem_first_ac_at.pop(slug, None)
                 participant.problem_bonus_pts.pop(slug, None)
                 participant.problem_best_beat_pct.pop(slug, None)
-                participant.problem_best_submission_id.pop(slug, None)
 
             total = 0
             for slug in participant.solved_problems:
@@ -675,7 +673,6 @@ class ContestEngine:
                             participant.solved_problems.add(slug)
                             participant.problem_first_ac_at[slug] = submitted_at
                             participant.problem_bonus_pts[slug] = new_bonus
-                            participant.problem_best_submission_id[slug] = sub_id
                             if beat_pct is not None:
                                 participant.problem_best_beat_pct[slug] = beat_pct
                             participant.score += points_delta
@@ -688,7 +685,6 @@ class ContestEngine:
                                 best_so_far is None or beat_pct > best_so_far
                             ):
                                 participant.problem_best_beat_pct[slug] = beat_pct
-                                participant.problem_best_submission_id[slug] = sub_id
                                 board_changed = True
                             old_bonus = participant.problem_bonus_pts.get(slug, 0)
                             if new_bonus > old_bonus:

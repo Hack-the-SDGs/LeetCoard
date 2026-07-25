@@ -19,6 +19,9 @@ class Settings(BaseSettings):
     )
 
     admin_token: str = Field(default="change-me", min_length=1)
+    # Password the public board asks for. Empty means the board is open to
+    # anyone who has the URL. The dashboard can override this at runtime.
+    view_password: str = ""
     leetcode_sessions: str = ""
     leetcode_api_base: str = "https://leetcode-api-pied.vercel.app"
     data_dir: Path = Path("./data")

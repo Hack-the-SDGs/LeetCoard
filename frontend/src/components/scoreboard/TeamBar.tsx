@@ -19,7 +19,7 @@ const SETTLE = { type: "tween", ease: [0.2, 0, 0, 1], duration: 0.42 } as const;
  */
 export default function TeamBar({ standings, connected, openCount }: Props) {
   return (
-    <header className="rule-b flex items-stretch gap-8 bg-ink-900 px-6 py-3">
+    <header className="rule-b flex items-stretch gap-8 bg-ink-900 px-5 py-2.5">
       <div className="flex shrink-0 flex-col justify-center">
         <span className="font-display text-[22px] font-bold leading-none tracking-label">
           LEETCOARD
@@ -53,14 +53,9 @@ export default function TeamBar({ standings, connected, openCount }: Props) {
                   {team.name}
                 </span>
               </div>
-              <div className="flex items-baseline gap-1.5">
-                <span className="tnum font-display text-[28px] font-bold leading-none">
-                  {team.score}
-                </span>
-                <span className="tnum font-mono text-[9px] text-paper-faint">
-                  {team.member_count} 人
-                </span>
-              </div>
+              <span className="tnum font-display text-[28px] font-bold leading-none">
+                {team.score}
+              </span>
             </motion.div>
           );
         })}

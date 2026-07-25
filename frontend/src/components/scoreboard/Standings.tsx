@@ -1,4 +1,4 @@
-import { useRef } from "react";
+import { useEffect, useRef, useState } from "react";
 import { AnimatePresence, motion } from "framer-motion";
 import Avatar from "../ui/Avatar";
 import { useAutoScroll } from "../../hooks/useAutoScroll";
@@ -11,22 +11,44 @@ interface Props {
   maxPoints: number;
 }
 
-/** Kept on screen at all times; everyone below this scrolls past on a loop. */
+/** Kept on screen at all times; everyone below this cycles or scrolls. */
 const PINNED = 5;
-
+const MODE_KEY = "leetcoard.standings-mode";
 const SETTLE = { type: "tween", ease: [0.2, 0, 0, 1], duration: 0.36 } as const;
+
+type Mode = "cycle" | "scroll";
+
+function readMode(): Mode {
+  return localStorage.getItem(MODE_KEY) === "scroll" ? "scroll" : "cycle";
+}
 
 export default function Standings({ rows, colors, maxPoints }: Props) {
   const scrollRef = useRef<HTMLDivElement>(null);
+  const [mode, setMode] = useState<Mode>(readMode);
   const pinned = rows.slice(0, PINNED);
   const rest = rows.slice(PINNED);
-  useAutoScroll(scrollRef, rest.length > 0);
+
+  useEffect(() => {
+    localStorage.setItem(MODE_KEY, mode);
+  }, [mode]);
+
+  useAutoScroll(scrollRef, mode === "cycle" && rest.length > 0);
 
   return (
     <section className="rule-r flex min-h-0 flex-col bg-ink-900">
-      <div className="rule-b flex items-baseline justify-between px-3 py-2">
-        <h2 className="font-mono text-[10px] tracking-label text-paper-dim">個人</h2>
-        <span className="tnum font-mono text-[10px] text-paper-faint">{rows.length} 人</span>
+      <div className="rule-b flex items-center justify-between gap-2 px-3 py-1.5">
+        <h2 className="font-mono text-[10px] tracking-label text-paper-dim">
+          個人
+          <span className="tnum ml-2 text-paper-faint">{rows.length}</span>
+        </h2>
+        <div className="flex items-center">
+          <ModeButton current={mode} value="cycle" onSelect={setMode}>
+            輪播
+          </ModeButton>
+          <ModeButton current={mode} value="scroll" onSelect={setMode}>
+            捲動
+          </ModeButton>
+        </div>
       </div>
 
       {rows.length === 0 ? (
@@ -62,6 +84,35 @@ export default function Standings({ rows, colors, maxPoints }: Props) {
   );
 }
 
+function ModeButton({
+  current,
+  value,
+  onSelect,
+  children,
+}: {
+  current: Mode;
+  value: Mode;
+  onSelect: (m: Mode) => void;
+  children: React.ReactNode;
+}) {
+  const active = current === value;
+  return (
+    <button
+      type="button"
+      aria-pressed={active}
+      onClick={() => onSelect(value)}
+      className={
+        "border px-1.5 py-[3px] font-mono text-[9px] tracking-label transition-colors " +
+        (active
+          ? "border-paper bg-paper text-ink-950"
+          : "border-ink-700 text-paper-faint hover:text-paper")
+      }
+    >
+      {children}
+    </button>
+  );
+}
+
 function Row({
   row,
   colors,
@@ -75,21 +126,27 @@ function Row({
   const ratio = maxPoints > 0 ? Math.min(1, row.score / maxPoints) : 0;
 
   return (
-    <div className="grid grid-cols-[24px_auto_minmax(0,1fr)_42px] items-center gap-2.5 px-3 py-[7px]">
-      <span className="tnum text-right font-display text-[15px] font-bold text-paper-dim">
+    <div className="grid grid-cols-[20px_auto_minmax(0,1fr)_34px] items-center gap-2 px-2.5 py-[6px]">
+      <span className="tnum text-right font-display text-[14px] font-bold text-paper-dim">
         {row.rank}
       </span>
-      <Avatar nickname={row.nickname} avatarUrl={row.avatar_url} color={color} size={24} />
+      <Avatar
+        nickname={row.nickname}
+        avatarUrl={row.avatar_url}
+        color={color}
+        size={22}
+        profileFor={row.username}
+      />
       <div className="min-w-0">
-        <div className="truncate text-[13px] font-bold leading-tight">{row.nickname}</div>
-        <div className="mt-1 h-[3px] w-full bg-ink-700">
+        <div className="truncate text-[12px] font-bold leading-tight">{row.nickname}</div>
+        <div className="mt-[3px] h-[3px] w-full bg-ink-700">
           <div
             className="h-full w-full origin-left transition-transform duration-500 ease-instrument"
             style={{ transform: `scaleX(${ratio})`, background: color }}
           />
         </div>
       </div>
-      <span className="tnum text-right font-display text-[20px] font-bold leading-none">
+      <span className="tnum text-right font-display text-[18px] font-bold leading-none">
         {row.score}
       </span>
     </div>

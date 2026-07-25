@@ -13,6 +13,8 @@ import type {
 
 interface ConnState {
   connected: boolean;
+  /** Set when the server refused our credentials, so the UI can ask again. */
+  unauthorized: boolean;
   error: string | null;
   reconnects: number;
   serverNow: string | null;
@@ -37,7 +39,7 @@ interface State {
 
 const initial: State = {
   snapshot: null,
-  conn: { connected: false, error: null, reconnects: 0, serverNow: null },
+  conn: { connected: false, unauthorized: false, error: null, reconnects: 0, serverNow: null },
 };
 
 function reducer(state: State, action: Action): State {
@@ -46,7 +48,7 @@ function reducer(state: State, action: Action): State {
       return {
         ...state,
         snapshot: action.snapshot,
-        conn: { ...state.conn, serverNow: action.snapshot.server_time },
+        conn: { ...state.conn, serverNow: action.snapshot.server_time, unauthorized: false },
       };
     case "leaderboard":
       if (!state.snapshot) return state;
@@ -88,6 +90,7 @@ function reducer(state: State, action: Action): State {
 export interface UseStreamOpts {
   audience: "public" | "admin";
   token?: string | null;
+  viewPassword?: string | null;
 }
 
 export function useContestStream(opts: UseStreamOpts) {
@@ -99,35 +102,33 @@ export function useContestStream(opts: UseStreamOpts) {
     let es: EventSource | null = null;
     let cancelled = false;
 
-    const open = () => {
-      const path = opts.audience === "admin" ? "/api/admin/stream" : "/api/stream";
+    const isAdmin = opts.audience === "admin";
+    const snapshotPath = isAdmin ? "/api/admin/snapshot" : "/api/snapshot";
+    const streamPath = isAdmin ? "/api/admin/stream" : "/api/stream";
+
+    const scheduleRetry = () => {
+      if (cancelled) return;
+      if (reconnectRef.current) window.clearTimeout(reconnectRef.current);
+      reconnectRef.current = window.setTimeout(() => {
+        reconnectCountRef.current += 1;
+        dispatch({ type: "conn", conn: { reconnects: reconnectCountRef.current } });
+        void connect();
+      }, 1500 + Math.random() * 1500);
+    };
+
+    const openStream = () => {
       const params: Record<string, string> = {};
-      if (opts.audience === "admin" && opts.token) params.token = opts.token;
-      const url = streamUrl(path, params);
+      if (isAdmin && opts.token) params.token = opts.token;
+      // EventSource cannot set headers, so the view password rides the query
+      // string the same way the admin token already does.
+      if (!isAdmin && opts.viewPassword) params.view = opts.viewPassword;
 
-      // Resync via REST snapshot first to avoid stale UI on reconnect.
-      void fetch(`${API_BASE}${opts.audience === "admin" ? "/api/admin/snapshot" : "/api/snapshot"}`, {
-        headers: opts.audience === "admin" && opts.token ? { Authorization: `Bearer ${opts.token}` } : {},
-      })
-        .then((r) => (r.ok ? r.json() : null))
-        .then((snap) => {
-          if (snap && !cancelled) dispatch({ type: "snapshot", snapshot: snap });
-        })
-        .catch(() => undefined);
-
-      es = new EventSource(url);
+      es = new EventSource(streamUrl(streamPath, params));
       es.onopen = () => dispatch({ type: "conn", conn: { connected: true, error: null } });
       es.onerror = () => {
         dispatch({ type: "conn", conn: { connected: false, error: "stream error" } });
         es?.close();
-        if (!cancelled) {
-          if (reconnectRef.current) window.clearTimeout(reconnectRef.current);
-          reconnectRef.current = window.setTimeout(() => {
-            reconnectCountRef.current += 1;
-            dispatch({ type: "conn", conn: { reconnects: reconnectCountRef.current } });
-            open();
-          }, 1500 + Math.random() * 1500);
-        }
+        scheduleRetry();
       };
 
       es.addEventListener("snapshot", (e) =>
@@ -162,10 +163,46 @@ export function useContestStream(opts: UseStreamOpts) {
         const d = JSON.parse((e as MessageEvent).data);
         dispatch({ type: "reset", snapshot: d.snapshot });
       });
+      // Sent when the view password changes; the retry below re-checks it.
+      es.addEventListener("closed", () => {
+        es?.close();
+        dispatch({ type: "conn", conn: { connected: false } });
+        scheduleRetry();
+      });
       es.addEventListener("ping", () => undefined);
     };
 
-    open();
+    /**
+     * Check credentials over REST before opening the stream. EventSource
+     * reports every failure as a bare `error`, so a 401 would otherwise be
+     * indistinguishable from a flaky network and retry forever.
+     */
+    const connect = async () => {
+      const headers: Record<string, string> = {};
+      if (isAdmin && opts.token) headers.Authorization = `Bearer ${opts.token}`;
+      if (!isAdmin && opts.viewPassword) headers["X-View-Password"] = opts.viewPassword;
+
+      let resp: Response;
+      try {
+        resp = await fetch(`${API_BASE}${snapshotPath}`, { headers });
+      } catch {
+        dispatch({ type: "conn", conn: { connected: false, error: "network" } });
+        scheduleRetry();
+        return;
+      }
+      if (cancelled) return;
+      if (resp.status === 401) {
+        dispatch({ type: "conn", conn: { connected: false, unauthorized: true } });
+        return; // wait for a new credential rather than hammering the server
+      }
+      if (resp.ok) {
+        const snap = await resp.json().catch(() => null);
+        if (snap && !cancelled) dispatch({ type: "snapshot", snapshot: snap });
+      }
+      if (!cancelled) openStream();
+    };
+
+    void connect();
 
     return () => {
       cancelled = true;
@@ -173,7 +210,7 @@ export function useContestStream(opts: UseStreamOpts) {
       es?.close();
     };
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [opts.audience, opts.token]);
+  }, [opts.audience, opts.token, opts.viewPassword]);
 
   return { snapshot: state.snapshot, conn: state.conn };
 }

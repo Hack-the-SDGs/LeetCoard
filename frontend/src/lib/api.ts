@@ -1,19 +1,25 @@
 // In dev, Vite proxies `/api` to localhost:8080.
-// In production (Cloudflare Pages), `_redirects` maps `/api/*` to the
-// upstream API host, so the frontend always uses the relative path.
+// In production the frontend talks to VITE_API_BASE directly.
 export const API_BASE = (import.meta.env.VITE_API_BASE ?? "").replace(/\/$/, "");
 
-function authHeaders(token: string | null): HeadersInit {
-  return token ? { Authorization: `Bearer ${token}`, "Content-Type": "application/json" } : { "Content-Type": "application/json" };
+export interface AuthOpts {
+  /** Admin token — opens the dashboard and every write endpoint. */
+  token?: string | null;
+  /** View password — opens the public board when one is set. */
+  viewPassword?: string | null;
 }
 
-export async function api<T>(
-  path: string,
-  init: RequestInit & { token?: string | null } = {},
-): Promise<T> {
-  const { token, ...rest } = init;
+function authHeaders({ token, viewPassword }: AuthOpts): HeadersInit {
+  const headers: Record<string, string> = { "Content-Type": "application/json" };
+  if (token) headers.Authorization = `Bearer ${token}`;
+  if (viewPassword) headers["X-View-Password"] = viewPassword;
+  return headers;
+}
+
+export async function api<T>(path: string, init: RequestInit & AuthOpts = {}): Promise<T> {
+  const { token, viewPassword, ...rest } = init;
   const url = path.startsWith("http") ? path : `${API_BASE}${path}`;
-  const headers = { ...authHeaders(token ?? null), ...(rest.headers ?? {}) };
+  const headers = { ...authHeaders({ token, viewPassword }), ...(rest.headers ?? {}) };
   const resp = await fetch(url, { ...rest, headers });
   if (!resp.ok) {
     const detail = await resp.text().catch(() => "");
@@ -24,7 +30,10 @@ export async function api<T>(
 }
 
 export class ApiError extends Error {
-  constructor(public status: number, message: string) {
+  constructor(
+    public status: number,
+    message: string,
+  ) {
     super(message);
     this.name = "ApiError";
   }

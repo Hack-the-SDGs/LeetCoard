@@ -73,6 +73,10 @@ class ResetIn(BaseModel):
     confirm: str = Field(default="")
 
 
+class ViewPasswordIn(BaseModel):
+    password: str = Field(default="", max_length=64)
+
+
 # ---- Auth ping --------------------------------------------------------------
 
 @router.get("/auth/check")
@@ -263,6 +267,48 @@ async def set_groups(body: GroupsIn, request: Request, _: None = Depends(require
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc))
     return {"ok": True, "groups": [g.model_dump(mode="json") for g in engine.contest.groups]}
+
+
+# ---- View password ----------------------------------------------------------
+
+def _view_state(gate) -> dict:
+    return {
+        "ok": True,
+        "password": gate.password,
+        "required": not gate.is_open,
+        "overridden": gate.overridden,
+    }
+
+
+@router.get("/view-password")
+async def get_view_password(request: Request, _: None = Depends(require_admin)) -> dict:
+    """The current password in clear text. Anyone who can call this already
+    holds the admin token, and the teacher needs to be able to read it out."""
+    return _view_state(request.app.state.view_gate)
+
+
+@router.put("/view-password")
+async def set_view_password(
+    body: ViewPasswordIn, request: Request, _: None = Depends(require_admin)
+) -> dict:
+    """Override the password for this process. An empty string opens the board.
+
+    Existing viewers are disconnected, otherwise a password change would only
+    apply to people arriving after it.
+    """
+    gate = request.app.state.view_gate
+    gate.set_override(body.password)
+    await broadcaster.close_audience("public")
+    return _view_state(gate)
+
+
+@router.delete("/view-password")
+async def clear_view_password(request: Request, _: None = Depends(require_admin)) -> dict:
+    """Drop the override and go back to whatever the environment says."""
+    gate = request.app.state.view_gate
+    gate.clear_override()
+    await broadcaster.close_audience("public")
+    return _view_state(gate)
 
 
 # ---- Polling health ---------------------------------------------------------

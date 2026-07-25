@@ -9,6 +9,7 @@ from contextlib import asynccontextmanager
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
+from .core.auth import ViewGate
 from .core.config import get_settings
 from .core.sse import broadcaster
 from .core.storage import ContestStore
@@ -36,6 +37,10 @@ async def lifespan(app: FastAPI):
 
     engine = ContestEngine(store, broadcaster, settings)
     app.state.engine = engine
+
+    # In-memory on purpose: a password set from the dashboard must not outlive
+    # the process that was told about it.
+    app.state.view_gate = ViewGate(settings.view_password)
 
     client = LeetCodeClient(
         api_base=settings.leetcode_api_base,

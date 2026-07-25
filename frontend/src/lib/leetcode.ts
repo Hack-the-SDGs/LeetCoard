@@ -4,6 +4,12 @@
 
 const BASE = "https://leetcode-api-pied.vercel.app";
 
+/** Public LeetCode profile. Submission pages are private to their author, so
+ *  the profile is the only link that is useful to anyone but the submitter. */
+export function profileUrl(username: string): string {
+  return `https://leetcode.com/u/${encodeURIComponent(username)}/`;
+}
+
 export interface LcSearchHit {
   title: string;
   title_slug: string;

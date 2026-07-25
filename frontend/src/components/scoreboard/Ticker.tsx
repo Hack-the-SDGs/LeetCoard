@@ -27,11 +27,11 @@ export default function Ticker({ events, colors }: Props) {
 
   return (
     <footer className="rule-t flex items-stretch gap-0 bg-ink-900">
-      <div className="flex shrink-0 items-center px-5">
+      <div className="flex shrink-0 items-center px-4">
         <span className="font-mono text-[10px] tracking-label text-paper-dim">動態</span>
       </div>
       {visible.length === 0 ? (
-        <p className="flex items-center px-2 py-4 text-[12px] text-paper-faint">
+        <p className="flex items-center px-2 py-3 text-[12px] text-paper-faint">
           還沒有提交紀錄。
         </p>
       ) : (
@@ -45,7 +45,7 @@ export default function Ticker({ events, colors }: Props) {
                 initial={{ opacity: 0 }}
                 animate={{ opacity: 1 }}
                 exit={{ opacity: 0 }}
-                className="flex min-w-0 flex-1 items-center gap-2.5 border-l border-ink-700 px-3 py-3"
+                className="flex min-w-0 flex-1 items-center gap-2.5 border-l border-ink-700 px-3 py-2"
               >
                 <Verdict event={event} color={teamColor(event.group_id, colors)} />
                 <div className="min-w-0 flex-1">

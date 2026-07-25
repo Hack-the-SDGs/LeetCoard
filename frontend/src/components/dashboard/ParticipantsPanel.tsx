@@ -143,6 +143,7 @@ export default function ParticipantsPanel({ snapshot, token }: Props) {
                 avatarUrl={person.avatar_url}
                 color={teamColor(person.group_id, colors)}
                 size={20}
+                profileFor={person.username}
               />
               <div className="min-w-0">
                 <div className="truncate text-[13px] font-bold leading-tight">

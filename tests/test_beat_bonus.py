@@ -140,8 +140,8 @@ async def test_no_beat_pct_field_gives_no_bonus(tmp_path: Path):
     evt = engine.contest.events[0]
     assert evt.bonus_delta == 0
     assert evt.beat_pct is None
-    # A solver with no runtime data still gets a submission link for the board.
-    assert alice.problem_best_submission_id["two-sum"] == "2"
+    # Solved, but with nothing to plot on the percentile track.
+    assert "two-sum" in alice.solved_problems
     assert "two-sum" not in alice.problem_best_beat_pct
 
 
@@ -269,7 +269,6 @@ async def test_best_runtime_is_tracked_even_when_the_tier_does_not_move(tmp_path
     alice = engine.contest.participants["alice"]
     assert alice.score == 1 + 3  # same tier, no extra points
     assert alice.problem_best_beat_pct["two-sum"] == 99.5
-    assert alice.problem_best_submission_id["two-sum"] == "21"
 
     # A worse re-run must not drag the recorded best back down.
     await engine.ingest_submissions(
@@ -278,7 +277,6 @@ async def test_best_runtime_is_tracked_even_when_the_tier_does_not_move(tmp_path
     )
     alice = engine.contest.participants["alice"]
     assert alice.problem_best_beat_pct["two-sum"] == 99.5
-    assert alice.problem_best_submission_id["two-sum"] == "21"
 
 
 @pytest.mark.asyncio

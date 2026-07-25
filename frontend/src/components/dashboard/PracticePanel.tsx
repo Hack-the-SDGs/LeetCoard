@@ -1,6 +1,11 @@
-import { useEffect, useState } from "react";
+import { useCallback, useEffect, useState } from "react";
 import { api, ApiError } from "../../lib/api";
-import type { AdminSnapshot, GroupPayload, PollingStatus } from "../../lib/types";
+import type {
+  AdminSnapshot,
+  GroupPayload,
+  PollingStatus,
+  ViewPasswordState,
+} from "../../lib/types";
 
 interface Props {
   snapshot: AdminSnapshot;
@@ -18,6 +23,22 @@ export default function PracticePanel({ snapshot, token }: Props) {
   const [busy, setBusy] = useState<string | null>(null);
   const [msg, setMsg] = useState<string | null>(null);
   const [status, setStatus] = useState<PollingStatus | null>(null);
+  const [view, setView] = useState<ViewPasswordState | null>(null);
+  const [viewDraft, setViewDraft] = useState("");
+
+  const loadView = useCallback(async () => {
+    try {
+      const state = await api<ViewPasswordState>("/api/admin/view-password", { token });
+      setView(state);
+      setViewDraft(state.password);
+    } catch {
+      // Leave the section blank rather than blocking the whole panel.
+    }
+  }, [token]);
+
+  useEffect(() => {
+    void loadView();
+  }, [loadView]);
 
   // Team edits are a form: only re-seed when the server actually sends a
   // different set, so typing a name isn't wiped by an unrelated broadcast.
@@ -172,6 +193,64 @@ export default function PracticePanel({ snapshot, token }: Props) {
         </button>
 
         {msg && <p className="mt-3 text-[12px] text-paper-dim">{msg}</p>}
+
+        <hr className="my-5 border-ink-700" />
+
+        <p className="font-mono text-[9px] tracking-label text-paper-faint">觀看密碼</p>
+        <input
+          value={viewDraft}
+          onChange={(e) => setViewDraft(e.target.value)}
+          spellCheck={false}
+          aria-label="觀看密碼"
+          placeholder="留空 = 任何人都能看"
+          className="mt-2 w-full rounded-sm border border-ink-700 bg-ink-950 px-2 py-1 font-mono text-[13px] outline-none focus:border-paper"
+        />
+        <div className="mt-2 flex items-center gap-2">
+          <button
+            onClick={() =>
+              run(
+                "view",
+                async () => {
+                  await api("/api/admin/view-password", {
+                    method: "PUT",
+                    token,
+                    body: JSON.stringify({ password: viewDraft }),
+                  });
+                  await loadView();
+                },
+                viewDraft.trim() ? "密碼已更新，計分板已登出所有人" : "計分板已改為公開",
+              )
+            }
+            disabled={busy === "view"}
+            className="rounded-sm bg-paper px-3 py-1 font-display text-[13px] font-bold text-ink-950 hover:brightness-95 disabled:opacity-40"
+          >
+            套用
+          </button>
+          <button
+            onClick={() =>
+              run(
+                "view-clear",
+                async () => {
+                  await api("/api/admin/view-password", { method: "DELETE", token });
+                  await loadView();
+                },
+                "已還原成 .env 的設定",
+              )
+            }
+            disabled={busy === "view-clear" || !view?.overridden}
+            className="rounded-sm border border-ink-600 px-3 py-1 text-[13px] hover:border-paper disabled:opacity-30"
+          >
+            還原 .env
+          </button>
+        </div>
+        <p className="mt-2 text-[11px] leading-relaxed text-paper-faint">
+          {view
+            ? `${view.overridden ? "本次執行覆寫中" : "使用 .env 設定"}· ${
+                view.required ? "計分板需要密碼" : "計分板目前公開"
+              }`
+            : "讀取中"}
+          。覆寫只存在記憶體，伺服器重啟後回到 .env。改密碼會中斷所有已連線的計分板。
+        </p>
 
         <hr className="my-5 border-ink-700" />
 
