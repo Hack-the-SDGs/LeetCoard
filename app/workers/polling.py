@@ -1,11 +1,19 @@
 """Polling worker.
 
-Schedules per-user submission fetches with jittered intervals so requests
-spread evenly across the global window. Errors on any single user are
-isolated — a failure for `alice` never stops polling for `bob`.
+Polling budget follows attention rather than standing. A student who just
+submitted is the one about to submit again, so they get checked every few
+seconds; a student who has been quiet — finished, chatting, not here yet —
+backs off exponentially. Score is deliberately *not* the signal: someone who
+has solved everything will never submit again, while someone stuck grinding
+wrong answers submits constantly.
 
-Also runs a low-priority profile-fetch loop (avatar, LC ranking, AC totals
-by difficulty), exposed via `enqueue_profile_fetch()`.
+The whole fleet is then scaled so the combined request rate stays under
+`poll_max_rps`, which is what keeps 70 active students from turning a 5 s
+floor into 14 requests per second.
+
+Errors on any single user are isolated — a failure for `alice` never stops
+polling for `bob`. A low-priority profile-fetch loop (avatar, LC ranking, AC
+totals by difficulty) runs alongside, exposed via `enqueue_profile_fetch()`.
 """
 
 from __future__ import annotations
@@ -14,7 +22,7 @@ import asyncio
 import logging
 import random
 from datetime import datetime, timedelta, timezone
-from typing import Optional, Set
+from typing import Dict, Optional, Set
 
 from ..core.config import Settings
 from ..domain.state import ContestEngine
@@ -22,7 +30,28 @@ from ..integrations.leetcode import LeetCodeClient, LeetCodeError
 
 log = logging.getLogger("gdg.polling")
 
-PROFILE_REFRESH_SEC = 600  # refresh every 10 min while contest is live
+PROFILE_REFRESH_SEC = 600  # refresh every 10 min while a session is live
+_MAX_BACKOFF_DOUBLINGS = 6  # 5s * 2^6 = 320s, well past any sane max interval
+
+
+def backoff_delay(idle_rounds: int, min_sec: float, max_sec: float) -> float:
+    """Exponential back-off for one student, clamped to the configured band."""
+    doublings = min(max(idle_rounds, 0), _MAX_BACKOFF_DOUBLINGS)
+    return min(min_sec * (2 ** doublings), max_sec)
+
+
+def rate_limit_scale(delays: Dict[str, float], max_rps: float) -> float:
+    """Factor to stretch every delay by so the fleet stays under `max_rps`.
+
+    Each student polled every `d` seconds contributes `1/d` requests per second.
+    When the sum overshoots the ceiling, stretching every delay by the overshoot
+    ratio brings the total back to exactly `max_rps` while preserving the
+    relative attention each student has earned. Returns 1.0 when there is room.
+    """
+    if max_rps <= 0:
+        return 1.0
+    demand = sum(1.0 / d for d in delays.values() if d > 0)
+    return max(1.0, demand / max_rps)
 
 
 class PollingWorker:
@@ -35,6 +64,8 @@ class PollingWorker:
         self._stop = asyncio.Event()
         self._profile_queue: asyncio.Queue[str] = asyncio.Queue()
         self._enqueued: Set[str] = set()
+        self._idle_rounds: Dict[str, int] = {}
+        self._sem = asyncio.Semaphore(max(1, settings.poll_concurrency))
 
     async def start(self) -> None:
         self._stop.clear()
@@ -55,6 +86,18 @@ class PollingWorker:
                 t.cancel()
         self._task = None
         self._profile_task = None
+
+    # -------- health / introspection --------
+
+    def status(self) -> dict:
+        """Small summary the dashboard shows next to the practice controls."""
+        active = sum(1 for n in self._idle_rounds.values() if n == 0)
+        return {
+            "polling": self._engine.is_polling_window(),
+            "open_problems": self._engine.open_problem_count(),
+            "tracked_users": len(self._engine.usernames()),
+            "active_users": active,
+        }
 
     def enqueue_profile_fetch(self, username: str) -> None:
         """Schedule a profile/avatar fetch for `username`. Idempotent per pending."""
@@ -115,8 +158,22 @@ class PollingWorker:
             hard_total=hard,
         )
 
+    # -------- scheduling --------
+
+    def _current_delays(self, usernames: list[str]) -> Dict[str, float]:
+        """Per-student delay after back-off and the fleet-wide rate ceiling."""
+        wanted = {
+            u: backoff_delay(
+                self._idle_rounds.get(u, 0),
+                self._cfg.poll_min_interval_sec,
+                self._cfg.poll_max_interval_sec,
+            )
+            for u in usernames
+        }
+        scale = rate_limit_scale(wanted, self._cfg.poll_max_rps)
+        return {u: d * scale for u, d in wanted.items()}
+
     async def _loop(self) -> None:
-        # Per-user next-due times. Initialised on first sight.
         next_due: dict[str, datetime] = {}
         log.info("Polling worker started")
         while not self._stop.is_set():
@@ -131,30 +188,45 @@ class PollingWorker:
                     continue
 
                 now = datetime.now(timezone.utc)
-                base = self._cfg.poll_interval_sec
+                delays = self._current_delays(usernames)
                 jitter = self._cfg.poll_jitter
 
+                # Spread first-seen users across one full interval so a cold
+                # start doesn't fire every request in the same instant.
                 for i, u in enumerate(usernames):
                     if u not in next_due:
-                        offset = (i * base / max(1, len(usernames))) + random.uniform(0, base * jitter)
-                        next_due[u] = now + timedelta(seconds=offset)
+                        spread = i * delays[u] / max(1, len(usernames))
+                        next_due[u] = now + timedelta(
+                            seconds=spread + random.uniform(0, delays[u] * jitter)
+                        )
 
-                due = [u for u, t in next_due.items() if t <= now]
+                due = [u for u, t in next_due.items() if t <= now and u in delays]
                 if not due:
-                    sleep_for = max(0.1, min((next_due[u] - now).total_seconds() for u in usernames))
-                    await asyncio.sleep(min(sleep_for, 1.0))
+                    sleep_for = min((next_due[u] - now).total_seconds() for u in usernames)
+                    await asyncio.sleep(max(0.1, min(sleep_for, 1.0)))
                     continue
 
-                tasks = [self._poll_one(u) for u in due]
-                await asyncio.gather(*tasks, return_exceptions=True)
+                results = await asyncio.gather(
+                    *(self._poll_one(u) for u in due), return_exceptions=True
+                )
 
+                for u, found in zip(due, results):
+                    if isinstance(found, BaseException):
+                        found = 0
+                    self._idle_rounds[u] = 0 if found else self._idle_rounds.get(u, 0) + 1
+
+                # Recompute after the streak update so a fresh submission
+                # pulls that student back to the floor immediately.
+                delays = self._current_delays(usernames)
                 for u in due:
-                    delay = base * (1 + random.uniform(-jitter, jitter))
-                    next_due[u] = datetime.now(timezone.utc) + timedelta(seconds=max(0.5, delay))
+                    delay = delays[u] * (1 + random.uniform(-jitter, jitter))
+                    next_due[u] = datetime.now(timezone.utc) + timedelta(
+                        seconds=max(0.5, delay)
+                    )
 
-                stale = set(next_due) - set(usernames)
-                for u in stale:
+                for u in set(next_due) - set(usernames):
                     next_due.pop(u, None)
+                    self._idle_rounds.pop(u, None)
 
             except Exception:
                 log.exception("Polling loop hiccup; sleeping 2s")
@@ -181,14 +253,17 @@ class PollingWorker:
             if pct is not None:
                 s["runtimePercentile"] = pct
 
-    async def _poll_one(self, username: str) -> None:
-        try:
-            subs = await self._client.get_recent_submissions(
-                username, limit=self._cfg.poll_recent_limit
-            )
-            await self._enrich_runtime_percentile(subs)
-            await self._engine.ingest_submissions(username, subs)
-        except LeetCodeError as exc:
-            log.warning("Poll failed for %s: %s", username, exc)
-        except Exception:
-            log.exception("Unexpected polling error for %s", username)
+    async def _poll_one(self, username: str) -> int:
+        """Returns the number of submissions seen for the first time."""
+        async with self._sem:
+            try:
+                subs = await self._client.get_recent_submissions(
+                    username, limit=self._cfg.poll_recent_limit
+                )
+                await self._enrich_runtime_percentile(subs)
+                return await self._engine.ingest_submissions(username, subs)
+            except LeetCodeError as exc:
+                log.warning("Poll failed for %s: %s", username, exc)
+            except Exception:
+                log.exception("Unexpected polling error for %s", username)
+            return 0

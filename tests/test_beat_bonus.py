@@ -89,7 +89,7 @@ def _seed(engine: ContestEngine, *, problems: list[Problem] | None = None) -> No
             _open_problem("3sum", Difficulty.medium, 3, 1, TIERS),
         ],
         participants={
-            "alice": Participant(username="alice", student_id="B11000001"),
+            "alice": Participant(username="alice", nickname="陳小明", group_id=1),
         },
     )
 

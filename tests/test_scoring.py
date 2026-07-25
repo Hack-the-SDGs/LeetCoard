@@ -65,9 +65,9 @@ def _seed(engine: ContestEngine, *, problems: list[Problem] | None = None) -> No
             _problem("trapping-rain-water", Difficulty.hard, 5, 3),
         ],
         participants={
-            "alice": Participant(username="alice", student_id="B11000001"),
-            "bob": Participant(username="bob", student_id="B11000002"),
-            "carol": Participant(username="carol", student_id="B11000003"),
+            "alice": Participant(username="alice", nickname="陳小明", group_id=1),
+            "bob": Participant(username="bob", nickname="王小華", group_id=2),
+            "carol": Participant(username="carol", nickname="李大十", group_id=2),
         },
     )
 

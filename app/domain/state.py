@@ -12,7 +12,6 @@ Frontends never compute scores or rank.
 from __future__ import annotations
 
 import asyncio
-import hashlib
 import logging
 from datetime import datetime, timedelta, timezone
 from typing import List, Optional, Tuple
@@ -24,10 +23,12 @@ from ..core.storage import ContestStore
 from .models import (
     Contest,
     Difficulty,
+    Group,
     Participant,
     Problem,
     SubmissionEvent,
     SubmissionStatus,
+    default_groups,
 )
 
 log = logging.getLogger("gdg.engine")
@@ -66,12 +67,7 @@ def _extract_beat_pct(sub: dict) -> Optional[float]:
     return None
 
 
-def _hash_color(username: str) -> str:
-    """Stable colour from username; same algorithm used on frontend.
-    Returns CSS oklch() string."""
-    h = int(hashlib.sha1(username.encode("utf-8")).hexdigest(), 16)
-    hue = h % 360
-    return f"oklch(72% 0.18 {hue})"
+_LATEST = datetime.max.replace(tzinfo=timezone.utc)
 
 
 class ContestEngine:
@@ -101,8 +97,10 @@ class ContestEngine:
         c = self.contest
         payload = {
             "server_time": _utcnow().isoformat(),
+            "groups": [g.model_dump(mode="json") for g in c.groups],
             "problems": self._problems_for_audience(audience),
             "leaderboard": self._leaderboard_snapshot(),
+            "group_leaderboard": self._group_leaderboard(),
             "events": [e.model_dump(mode="json") for e in c.events[-200:]],
         }
         if audience == "admin":
@@ -112,7 +110,18 @@ class ContestEngine:
         return payload
 
     def _push_leaderboard(self) -> None:
-        self._bc.broadcast("leaderboard_update", {"leaderboard": self._leaderboard_snapshot()})
+        self._bc.broadcast(
+            "leaderboard_update",
+            {
+                "leaderboard": self._leaderboard_snapshot(),
+                "group_leaderboard": self._group_leaderboard(),
+            },
+        )
+
+    def _broadcast_groups(self) -> None:
+        self._bc.broadcast(
+            "groups_updated", {"groups": [g.model_dump(mode="json") for g in self.contest.groups]}
+        )
 
     def _broadcast_problems(self) -> None:
         """Send problems_updated to admin (every problem) and public (only the
@@ -155,9 +164,9 @@ class ContestEngine:
                 {
                     "rank": p.rank,
                     "username": p.username,
-                    "student_id": p.student_id,
+                    "nickname": p.nickname,
+                    "group_id": p.group_id,
                     "avatar_url": p.avatar_url,
-                    "color": p.color or _hash_color(p.username),
                     "score": p.score,
                     "solved_problems": sorted(p.solved_problems),
                     "reached_current_score_at": p.reached_current_score_at.isoformat()
@@ -176,10 +185,51 @@ class ContestEngine:
             )
         return out
 
+    def _group_leaderboard(self) -> List[dict]:
+        """Team standings: plain sum of member scores.
+
+        Teams are pre-assigned and near equal in size, so a sum ranks the same
+        as an average while moving in numbers big enough to read across a room.
+        Member count travels with the row so an uneven team is visible rather
+        than hidden. Unassigned students are counted nowhere.
+        """
+        rows = {
+            g.id: {
+                "group_id": g.id,
+                "name": g.name,
+                "color": g.color,
+                "score": 0,
+                "member_count": 0,
+                "_reached": None,
+            }
+            for g in self.contest.groups
+        }
+        for p in self.contest.participants.values():
+            row = rows.get(p.group_id) if p.group_id is not None else None
+            if row is None:
+                continue
+            row["score"] += p.score
+            row["member_count"] += 1
+            reached = p.reached_current_score_at
+            if reached is not None and (row["_reached"] is None or reached > row["_reached"]):
+                row["_reached"] = reached
+
+        ordered = sorted(
+            rows.values(),
+            key=lambda r: (-r["score"], r["_reached"] or _LATEST, r["group_id"]),
+        )
+        out: List[dict] = []
+        for rank, row in enumerate(ordered, start=1):
+            reached = row.pop("_reached")
+            out.append(
+                {**row, "rank": rank, "reached_current_score_at": reached.isoformat() if reached else None}
+            )
+        return out
+
     def _compute_ranks(self) -> List[Participant]:
         # Sort: -score, reached_current_score_at asc (never None for >0 score),
         # then username for stability.
-        sentinel = datetime.max.replace(tzinfo=timezone.utc)
+        sentinel = _LATEST
         plist = list(self.contest.participants.values())
         plist.sort(
             key=lambda p: (
@@ -356,31 +406,73 @@ class ContestEngine:
 
     # -------- participants --------
 
-    async def upsert_participants(self, rows: List[Tuple[str, str]]) -> Tuple[int, int, List[str], List[str]]:
-        """Bulk add/update; returns (created, updated, errors, new_usernames)."""
+    async def upsert_participants(
+        self, rows: List[Tuple[str, str, Optional[int]]]
+    ) -> Tuple[int, int, List[str], List[str]]:
+        """Bulk add/update; returns (created, updated, errors, new_usernames).
+
+        A row without a group leaves an existing assignment alone, so re-importing
+        a name list never silently unassigns everyone.
+        """
         created = 0
         updated = 0
         errors: List[str] = []
         new_usernames: List[str] = []
+        valid_groups = {g.id for g in self.contest.groups}
         async with self._lock:
-            for username, sid in rows:
+            for username, nickname, group_id in rows:
                 u = (username or "").strip()
-                s = (sid or "").strip()
-                if not u or not s:
-                    errors.append(f"Empty username or student id: '{username}','{sid}'")
+                n = (nickname or "").strip()
+                if not u or not n:
+                    errors.append(f"缺少 username 或姓名：'{username}','{nickname}'")
                     continue
-                if u in self.contest.participants:
-                    self.contest.participants[u].student_id = s
+                if group_id is not None and group_id not in valid_groups:
+                    errors.append(f"{u}：組別 {group_id} 不存在（可用 1–{len(valid_groups)}）")
+                    continue
+                existing = self.contest.participants.get(u)
+                if existing is not None:
+                    existing.nickname = n
+                    if group_id is not None:
+                        existing.group_id = group_id
                     updated += 1
                 else:
                     self.contest.participants[u] = Participant(
-                        username=u, student_id=s, color=_hash_color(u)
+                        username=u, nickname=n, group_id=group_id
                     )
                     created += 1
                     new_usernames.append(u)
             self._broadcast_participants_admin()
             self._push_leaderboard()
         return created, updated, errors, new_usernames
+
+    async def set_participant_group(self, username: str, group_id: Optional[int]) -> None:
+        valid_groups = {g.id for g in self.contest.groups}
+        if group_id is not None and group_id not in valid_groups:
+            raise ValueError(f"組別 {group_id} 不存在")
+        async with self._lock:
+            participant = self.contest.participants.get(username)
+            if participant is None:
+                raise KeyError(username)
+            participant.group_id = group_id
+            self._broadcast_participants_admin()
+            self._push_leaderboard()
+
+    # -------- groups --------
+
+    async def set_groups(self, groups: List[Group]) -> None:
+        """Rename / re-colour the fixed teams. Colour changes land everywhere
+        immediately because every surface resolves colour through group id."""
+        async with self._lock:
+            by_id = {g.id: g for g in self.contest.groups}
+            for incoming in groups:
+                current = by_id.get(incoming.id)
+                if current is None:
+                    raise ValueError(f"未知的組別 {incoming.id}")
+                current.name = incoming.name.strip() or current.name
+                current.color = incoming.color.strip() or current.color
+            self._store.mark_dirty()
+            self._broadcast_groups()
+            self._push_leaderboard()
 
     async def remove_participant(self, username: str) -> bool:
         async with self._lock:
@@ -424,8 +516,8 @@ class ContestEngine:
                 {
                     u: Participant(
                         username=u,
-                        student_id=p.student_id,
-                        color=p.color,
+                        nickname=p.nickname,
+                        group_id=p.group_id,
                         avatar_url=p.avatar_url,
                         lc_ranking=p.lc_ranking,
                         lc_easy_total=p.lc_easy_total,
@@ -440,6 +532,11 @@ class ContestEngine:
             )
             self._store.replace_contest(
                 Contest(
+                    # Team names and colours are setup, not scores — a reset
+                    # between sessions must not send them back to "第一組".
+                    groups=[g.model_copy() for g in self.contest.groups]
+                    if keep_config
+                    else default_groups(),
                     problems=problems,
                     participants=participants,
                     last_reset_at=_utcnow(),
@@ -463,7 +560,7 @@ class ContestEngine:
 
     # -------- submission ingestion (the scoring path) --------
 
-    async def ingest_submissions(self, username: str, raw_submissions: List[dict]) -> None:
+    async def ingest_submissions(self, username: str, raw_submissions: List[dict]) -> int:
         """Apply scoring rules to a batch of LeetCode-shaped submissions.
 
         `raw_submissions` is the list returned by `/user/{username}/submissions`,
@@ -471,14 +568,20 @@ class ContestEngine:
 
         Submissions to anything outside the configured problem set are dropped
         entirely — students practising other problems must not flood the feed.
+
+        Returns how many submissions were seen for the first time. The polling
+        worker reads that as an activity signal: it counts any fresh submission,
+        including ones to problems we don't track, because a student grinding
+        something else is still a student who is actively submitting.
         """
 
         if not raw_submissions:
-            return
+            return 0
+        newly_seen = 0
         async with self._lock:
             participant = self.contest.participants.get(username)
             if not participant:
-                return  # ignore submissions for unknown users (defensive)
+                return 0  # ignore submissions for unknown users (defensive)
 
             tracked = {p.title_slug: p for p in self.contest.problems}
             new_events: List[SubmissionEvent] = []
@@ -489,6 +592,7 @@ class ContestEngine:
                     continue
                 # Always mark seen so we don't reprocess on the next poll.
                 self.contest.seen_submission_ids.add(sub_id)
+                newly_seen += 1
 
                 slug = sub.get("titleSlug") or sub.get("title_slug")
                 status_disp = sub.get("statusDisplay") or sub.get("status") or "Other"
@@ -554,7 +658,8 @@ class ContestEngine:
                 evt = SubmissionEvent(
                     submission_id=sub_id,
                     username=username,
-                    student_id=participant.student_id,
+                    nickname=participant.nickname,
+                    group_id=participant.group_id,
                     title_slug=slug,
                     title=problem.title or slug,
                     status=status_disp,
@@ -577,13 +682,14 @@ class ContestEngine:
                 self._store.mark_dirty()
 
         if not new_events:
-            return
+            return newly_seen
 
         # Push events + refreshed leaderboard *outside* the lock.
         for evt in new_events:
             self._bc.broadcast("submission_event", evt.model_dump(mode="json"))
         if any(e.is_scoring for e in new_events):
             self._push_leaderboard()
+        return newly_seen
 
     # -------- helpers used by routes / workers --------
 

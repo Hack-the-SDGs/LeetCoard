@@ -28,6 +28,38 @@ class Difficulty(str, Enum):
     hard = "hard"
 
 
+GROUP_COUNT = 6
+
+
+class Group(BaseModel):
+    """One of the six fixed teams.
+
+    Colour is the single source of identity on the board: avatars, names and
+    scoring chips all take it, so editing the hex here re-skins every surface
+    at once.
+    """
+
+    id: int = Field(ge=1, le=GROUP_COUNT)
+    name: str
+    color: str  # css hex, e.g. "#E4572E"
+
+
+# Six hues at matched lightness so no team reads as louder than another, and
+# far enough apart to stay separable on a projector from the back of a room.
+_DEFAULT_GROUPS = (
+    (1, "第一組", "#E4572E"),
+    (2, "第二組", "#E8B33C"),
+    (3, "第三組", "#4FA96B"),
+    (4, "第四組", "#3FA7C4"),
+    (5, "第五組", "#7B72D6"),
+    (6, "第六組", "#D45C9B"),
+)
+
+
+def default_groups() -> List[Group]:
+    return [Group(id=i, name=name, color=color) for i, name, color in _DEFAULT_GROUPS]
+
+
 class BonusTier(BaseModel):
     """One bracket in the runtime-beat-% bonus table.
 
@@ -81,9 +113,9 @@ class Problem(BaseModel):
 
 class Participant(BaseModel):
     username: str
-    student_id: str
+    nickname: str  # real name, shown on the public board instead of the handle
+    group_id: Optional[int] = None  # None = unassigned, excluded from the team board
     avatar_url: Optional[str] = None
-    color: Optional[str] = None  # frontend uses username hash if absent
     score: int = 0
     rank: int = 0
     solved_problems: Set[str] = Field(default_factory=set)
@@ -125,7 +157,8 @@ class SubmissionEvent(BaseModel):
     id: str = Field(default_factory=lambda: uuid4().hex)
     submission_id: Optional[str] = None  # provider-side id, e.g. LeetCode submission id
     username: str
-    student_id: str
+    nickname: str
+    group_id: Optional[int] = None
     title_slug: str
     title: Optional[str] = None
     status: str  # raw provider string ("Accepted", "Wrong Answer", ...)
@@ -143,6 +176,7 @@ class SubmissionEvent(BaseModel):
 class Contest(BaseModel):
     """Full persistent practice state. Mirrored to disk as JSON on every change."""
 
+    groups: List[Group] = Field(default_factory=default_groups)
     problems: List[Problem] = Field(default_factory=list)
     participants: Dict[str, Participant] = Field(default_factory=dict)  # keyed by username
 

@@ -16,10 +16,12 @@ from sse_starlette.sse import EventSourceResponse
 
 from ..core.auth import admin_token_for_sse, require_admin
 from ..core.sse import broadcaster
-from ..domain.models import Difficulty, Problem
+from ..domain.models import GROUP_COUNT, Difficulty, Group, Problem
 
 
 router = APIRouter()
+
+HEX_COLOR = r"^#(?:[0-9a-fA-F]{3}|[0-9a-fA-F]{6})$"
 
 
 # ---- Request / Response models ----------------------------------------------
@@ -48,8 +50,22 @@ class ProblemOpenIn(BaseModel):
     open: bool
 
 
+class GroupIn(BaseModel):
+    id: int = Field(ge=1, le=GROUP_COUNT)
+    name: str = Field(min_length=1, max_length=24)
+    color: str = Field(pattern=HEX_COLOR)
+
+
+class GroupsIn(BaseModel):
+    groups: List[GroupIn]
+
+
 class ParticipantsBulkIn(BaseModel):
-    text: str = Field(description="CSV-ish: lines of `username,student_id`")
+    text: str = Field(description="CSV-ish: lines of `username,nickname[,group_id]`")
+
+
+class ParticipantGroupIn(BaseModel):
+    group_id: Optional[int] = Field(default=None, ge=1, le=GROUP_COUNT)
 
 
 class ResetIn(BaseModel):
@@ -173,8 +189,10 @@ async def set_problem_open(
 
 @router.put("/participants/bulk")
 async def bulk_upsert(body: ParticipantsBulkIn, request: Request, _: None = Depends(require_admin)) -> dict:
+    """Import `username,姓名[,組別]`. The group column is optional; leaving it
+    out keeps whatever the student is already assigned to."""
     engine = request.app.state.engine
-    rows: list[tuple[str, str]] = []
+    rows: list[tuple[str, str, Optional[int]]] = []
     line_errors: list[str] = []
     reader = csv.reader(io.StringIO(body.text))
     for idx, row in enumerate(reader, start=1):
@@ -184,9 +202,16 @@ async def bulk_upsert(body: ParticipantsBulkIn, request: Request, _: None = Depe
         if cleaned[0].lower() in ("username", "user", "user_name"):  # header row
             continue
         if len(cleaned) < 2:
-            line_errors.append(f"line {idx}: needs `username,student_id`")
+            line_errors.append(f"第 {idx} 行：需要 `username,姓名[,組別]`")
             continue
-        rows.append((cleaned[0], cleaned[1]))
+        group_id: Optional[int] = None
+        if len(cleaned) >= 3 and cleaned[2]:
+            try:
+                group_id = int(cleaned[2])
+            except ValueError:
+                line_errors.append(f"第 {idx} 行：組別「{cleaned[2]}」不是數字")
+                continue
+        rows.append((cleaned[0], cleaned[1], group_id))
     created, updated, errors, new_users = await engine.upsert_participants(rows)
 
     # Auto-trigger profile fetch for new users.
@@ -203,6 +228,22 @@ async def bulk_upsert(body: ParticipantsBulkIn, request: Request, _: None = Depe
     }
 
 
+@router.put("/participants/{username}/group")
+async def set_participant_group(
+    username: str, body: ParticipantGroupIn, request: Request, _: None = Depends(require_admin)
+) -> dict:
+    """Move one student between teams. Team scores are summed live from members,
+    so the points travel with them — nothing needs migrating."""
+    engine = request.app.state.engine
+    try:
+        await engine.set_participant_group(username, body.group_id)
+    except KeyError:
+        raise HTTPException(status_code=404, detail="participant not found")
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc))
+    return {"ok": True, "username": username, "group_id": body.group_id}
+
+
 @router.delete("/participants/{username}")
 async def delete_participant(username: str, request: Request, _: None = Depends(require_admin)) -> dict:
     engine = request.app.state.engine
@@ -210,6 +251,29 @@ async def delete_participant(username: str, request: Request, _: None = Depends(
     if not existed:
         raise HTTPException(status_code=404, detail="participant not found")
     return {"ok": True}
+
+
+# ---- Groups -----------------------------------------------------------------
+
+@router.put("/groups")
+async def set_groups(body: GroupsIn, request: Request, _: None = Depends(require_admin)) -> dict:
+    engine = request.app.state.engine
+    try:
+        await engine.set_groups([Group(**g.model_dump()) for g in body.groups])
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc))
+    return {"ok": True, "groups": [g.model_dump(mode="json") for g in engine.contest.groups]}
+
+
+# ---- Polling health ---------------------------------------------------------
+
+@router.get("/polling/status")
+async def polling_status(request: Request, _: None = Depends(require_admin)) -> dict:
+    polling = request.app.state.polling_worker
+    if polling is None:
+        return {"ok": True, "polling": False, "open_problems": 0,
+                "tracked_users": 0, "active_users": 0}
+    return {"ok": True, **polling.status()}
 
 
 # ---- Reset ------------------------------------------------------------------

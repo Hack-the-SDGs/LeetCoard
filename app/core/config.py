@@ -23,9 +23,16 @@ class Settings(BaseSettings):
     leetcode_api_base: str = "https://leetcode-api-pied.vercel.app"
     data_dir: Path = Path("./data")
 
-    poll_interval_sec: float = 5.0
-    poll_recent_limit: int = 5
+    # Polling adapts per student: someone who just submitted is checked every
+    # poll_min_interval_sec, someone idle backs off exponentially towards
+    # poll_max_interval_sec, and the whole fleet is then scaled so the combined
+    # request rate never exceeds poll_max_rps.
+    poll_min_interval_sec: float = 5.0
+    poll_max_interval_sec: float = 60.0
+    poll_max_rps: float = 6.0
+    poll_recent_limit: int = 10
     poll_jitter: float = 0.2
+    poll_concurrency: int = 8
     post_end_grace_sec: float = 90.0
     leetcode_http_timeout_sec: float = 10.0
 
