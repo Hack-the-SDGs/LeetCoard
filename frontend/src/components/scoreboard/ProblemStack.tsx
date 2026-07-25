@@ -103,7 +103,8 @@ function Heading({
 }) {
   return (
     <div className="flex w-full items-baseline gap-2.5">
-      <span className="tnum shrink-0 font-mono text-[11px] text-paper-faint">
+      {/* Fixed width so #1 and #1768 put their titles on the same x. */}
+      <span className="tnum w-[44px] shrink-0 text-right font-mono text-[12px] text-paper-faint">
         #{problem.frontend_id ?? "—"}
       </span>
       <h3

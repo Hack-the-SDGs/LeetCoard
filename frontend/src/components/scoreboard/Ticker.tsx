@@ -49,8 +49,13 @@ export default function Ticker({ events, colors }: Props) {
               >
                 <Verdict event={event} color={teamColor(event.group_id, colors)} />
                 <div className="min-w-0 flex-1">
-                  <div className="truncate text-[12px] font-bold leading-tight">
-                    {event.nickname}
+                  <div className="flex min-w-0 items-baseline gap-1.5">
+                    <span className="truncate text-[13px] font-bold leading-tight">
+                      {event.nickname}
+                    </span>
+                    <span className="truncate font-mono text-[10px] leading-tight text-paper-faint">
+                      {event.username}
+                    </span>
                   </div>
                   <div className="truncate font-mono text-[10px] leading-tight text-paper-faint">
                     {event.title ?? event.title_slug}

@@ -126,27 +126,34 @@ function Row({
   const ratio = maxPoints > 0 ? Math.min(1, row.score / maxPoints) : 0;
 
   return (
-    <div className="grid grid-cols-[20px_auto_minmax(0,1fr)_34px] items-center gap-2 px-2.5 py-[6px]">
-      <span className="tnum text-right font-display text-[14px] font-bold text-paper-dim">
+    // 44px tall: twenty of these plus the header and the ticker is exactly a
+    // 1080p column, so the twentieth row lands whole rather than half-cut.
+    <div className="grid grid-cols-[22px_auto_minmax(0,1fr)_40px] items-center gap-2.5 px-3 py-2">
+      <span className="tnum text-right font-display text-[17px] font-bold text-paper-dim">
         {row.rank}
       </span>
       <Avatar
         nickname={row.nickname}
         avatarUrl={row.avatar_url}
         color={color}
-        size={22}
+        size={28}
         profileFor={row.username}
       />
       <div className="min-w-0">
-        <div className="truncate text-[12px] font-bold leading-tight">{row.nickname}</div>
-        <div className="mt-[3px] h-[3px] w-full bg-ink-700">
+        <div className="flex min-w-0 items-baseline gap-1.5">
+          <span className="truncate text-[14px] font-bold leading-tight">{row.nickname}</span>
+          <span className="truncate font-mono text-[10px] leading-tight text-paper-faint">
+            {row.username}
+          </span>
+        </div>
+        <div className="mt-[5px] h-[3px] w-full bg-ink-700">
           <div
             className="h-full w-full origin-left transition-transform duration-500 ease-instrument"
             style={{ transform: `scaleX(${ratio})`, background: color }}
           />
         </div>
       </div>
-      <span className="tnum text-right font-display text-[18px] font-bold leading-none">
+      <span className="tnum text-right font-display text-[22px] font-bold leading-none">
         {row.score}
       </span>
     </div>

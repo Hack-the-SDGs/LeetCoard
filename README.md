@@ -38,8 +38,11 @@ LeetCoard 是投影用的即時計分板，給社課現場帶練習題用。老�
 
 - **逐題開放** — 每題自己的 `opened_at` / `closed_at` 視窗，開關即時生效。關題
   時記下時間點而不是直接關門，所以關題前一秒送出、下一輪才被抓到的 AC 仍然計分
-- **百分位賽道** — 每題把解題者畫在 0–100 的 runtime 百分位軸上。解出來就上場，
-  優化就往右滑。這也是「無限重送」這條規則的視覺意義所在
+- **百分位賽道** — 每題把最快的 20 位解題者畫在 0–100 的 runtime 百分位軸上。解出
+  來就上場，優化就往右滑。這也是「無限重送」這條規則的視覺意義所在。第 21 名以後
+  只計人數不列名，公開板上永遠不會出現「還沒解出」的名單
+- **助教視角** — 後台的「解題狀況」列出每題的未解出名單（分數低的排前面），讓助教
+  知道該走去幫誰。這份資料只在控制台，不會出現在投影畫面上
 - **兩個排行榜** — 六組固定組別的組別排行放在畫面最上方中央，個人排行在左側，
   前五名固定不動、其餘自動輪播，70 人也都輪得到自己
 - **顏色即身分** — 介面本身沒有彩度，畫面上每一抹顏色都代表某一組；難度改用字重
@@ -126,7 +129,8 @@ leetcoard/
 │       │   ├── scoreboard/       # TeamBar / Standings / ProblemStack
 │       │   │                     # PercentileTrack / Ticker
 │       │   ├── dashboard/        # PracticePanel / ProblemsPanel
-│       │   │                     # ParticipantsPanel / EventsPanel / Login
+│       │   │                     # ParticipantsPanel / SolveStatusPanel
+│       │   │                     # EventsPanel / Login
 │       │   └── ui/               # Avatar / DifficultyMark / Switch / icons
 │       ├── hooks/
 │       │   ├── useContestStream.ts  # snapshot + SSE 對齊、自動重連

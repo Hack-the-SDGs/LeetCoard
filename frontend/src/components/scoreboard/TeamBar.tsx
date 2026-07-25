@@ -1,5 +1,6 @@
 import { motion } from "framer-motion";
-import type { GroupStanding } from "../../lib/types";
+import Avatar from "../ui/Avatar";
+import type { GroupStanding, TopMember } from "../../lib/types";
 
 interface Props {
   standings: GroupStanding[];
@@ -19,7 +20,7 @@ const SETTLE = { type: "tween", ease: [0.2, 0, 0, 1], duration: 0.42 } as const;
  */
 export default function TeamBar({ standings, connected, openCount }: Props) {
   return (
-    <header className="rule-b flex items-stretch gap-8 bg-ink-900 px-5 py-2.5">
+    <header className="rule-b relative z-30 flex items-stretch gap-8 bg-ink-900 px-5 py-2.5">
       <div className="flex shrink-0 flex-col justify-center">
         <span className="font-display text-[22px] font-bold leading-none tracking-label">
           LEETCOARD
@@ -42,7 +43,7 @@ export default function TeamBar({ standings, connected, openCount }: Props) {
                 style={{ background: team.color, opacity: leading ? 1 : 0.35 }}
               />
               <div className="flex items-baseline gap-1.5">
-                <span className="font-mono text-[10px] tabular-nums text-paper-faint">
+                <span className="tnum font-mono text-[10px] tabular-nums text-paper-faint">
                   {String(team.rank).padStart(2, "0")}
                 </span>
                 <span
@@ -53,9 +54,16 @@ export default function TeamBar({ standings, connected, openCount }: Props) {
                   {team.name}
                 </span>
               </div>
-              <span className="tnum font-display text-[28px] font-bold leading-none">
-                {team.score}
-              </span>
+              <div className="flex items-end justify-between gap-2">
+                <span className="tnum font-display text-[28px] font-bold leading-none">
+                  {team.score}
+                </span>
+                <div className="flex items-center gap-1 pb-[3px]">
+                  {team.top_members.map((member) => (
+                    <Contributor key={member.username} member={member} color={team.color} />
+                  ))}
+                </div>
+              </div>
             </motion.div>
           );
         })}
@@ -79,10 +87,26 @@ export default function TeamBar({ standings, connected, openCount }: Props) {
             {connected ? "LIVE" : "離線"}
           </span>
         </div>
-        <span className="tnum font-mono text-[10px] text-paper-faint">
-          {openCount} 題開放中
-        </span>
+        <span className="tnum font-mono text-[10px] text-paper-faint">{openCount} 題開放中</span>
       </div>
     </header>
+  );
+}
+
+/**
+ * One of the three who carried the team.
+ *
+ * The name only appears on hover: six teams share the header, so three labelled
+ * portraits each would leave no room for the score they are there to explain.
+ */
+function Contributor({ member, color }: { member: TopMember; color: string }) {
+  return (
+    <span className="group relative flex">
+      <Avatar nickname={member.nickname} avatarUrl={member.avatar_url} color={color} size={22} />
+      <span className="pointer-events-none absolute left-1/2 top-full z-40 mt-1.5 hidden -translate-x-1/2 whitespace-nowrap border border-ink-600 bg-ink-800 px-2 py-1 group-hover:block">
+        <span className="text-[12px] font-bold">{member.nickname}</span>
+        <span className="tnum ml-1.5 font-mono text-[11px] text-paper-faint">{member.score}</span>
+      </span>
+    </span>
   );
 }

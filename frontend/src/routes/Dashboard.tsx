@@ -5,6 +5,7 @@ import Login from "../components/dashboard/Login";
 import PracticePanel from "../components/dashboard/PracticePanel";
 import ProblemsPanel from "../components/dashboard/ProblemsPanel";
 import ParticipantsPanel from "../components/dashboard/ParticipantsPanel";
+import SolveStatusPanel from "../components/dashboard/SolveStatusPanel";
 import EventsPanel from "../components/dashboard/EventsPanel";
 import type { AdminSnapshot } from "../lib/types";
 
@@ -98,11 +99,14 @@ function DashboardInner({ token, onLogout }: { token: string; onLogout: () => vo
         <div className="min-h-0 xl:row-span-2">
           <PracticePanel snapshot={adminSnap} token={token} />
         </div>
-        <div className="min-h-0 xl:row-span-2">
+        <div className="min-h-0">
           <ProblemsPanel snapshot={adminSnap} token={token} />
         </div>
         <div className="min-h-0">
           <ParticipantsPanel snapshot={adminSnap} token={token} />
+        </div>
+        <div className="min-h-0">
+          <SolveStatusPanel snapshot={adminSnap} />
         </div>
         <div className="min-h-0">
           <EventsPanel snapshot={adminSnap} />

@@ -57,6 +57,13 @@ export interface LeaderboardRow {
   lc_hard_total: number;
 }
 
+export interface TopMember {
+  username: string;
+  nickname: string;
+  avatar_url: string | null;
+  score: number;
+}
+
 export interface GroupStanding {
   rank: number;
   group_id: number;
@@ -65,6 +72,8 @@ export interface GroupStanding {
   score: number;
   member_count: number;
   reached_current_score_at: string | null;
+  /** Up to three members who contributed most; empty until someone scores. */
+  top_members: TopMember[];
 }
 
 export interface SubmissionEventPayload {

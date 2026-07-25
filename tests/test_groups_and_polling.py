@@ -68,6 +68,35 @@ def test_team_score_is_the_sum_of_its_members(tmp_path: Path):
     assert rows[2]["rank"] == 2
 
 
+def test_team_carries_its_three_biggest_contributors(tmp_path: Path):
+    engine = _make_engine(tmp_path)
+    _seed(engine, {
+        "a": _member("a", 1, 30, START),
+        "b": _member("b", 1, 20, START),
+        "c": _member("c", 1, 10, START),
+        "d": _member("d", 1, 5, START),
+        "e": _member("e", 1, 0, None),
+    })
+    rows = {r["group_id"]: r for r in engine._group_leaderboard()}
+    top = rows[1]["top_members"]
+    assert [m["username"] for m in top] == ["a", "b", "c"]
+    assert top[0]["score"] == 30
+    assert "nickname" in top[0] and "avatar_url" in top[0]
+
+
+def test_members_on_zero_are_not_shown_as_contributors(tmp_path: Path):
+    """Three grey portraits implying contribution would be a lie; an empty
+    slot is honest."""
+    engine = _make_engine(tmp_path)
+    _seed(engine, {
+        "a": _member("a", 2, 0, None),
+        "b": _member("b", 2, 0, None),
+    })
+    rows = {r["group_id"]: r for r in engine._group_leaderboard()}
+    assert rows[2]["top_members"] == []
+    assert rows[2]["member_count"] == 2
+
+
 def test_unassigned_students_count_towards_no_team(tmp_path: Path):
     engine = _make_engine(tmp_path)
     _seed(engine, {

@@ -68,6 +68,7 @@ def _extract_beat_pct(sub: dict) -> Optional[float]:
 
 
 _LATEST = datetime.max.replace(tzinfo=timezone.utc)
+_TOP_MEMBERS = 3  # portraits shown beside each team's score
 
 
 class ContestEngine:
@@ -239,6 +240,7 @@ class ContestEngine:
                 "score": 0,
                 "member_count": 0,
                 "_reached": None,
+                "_members": [],
             }
             for g in self.contest.groups
         }
@@ -248,6 +250,7 @@ class ContestEngine:
                 continue
             row["score"] += p.score
             row["member_count"] += 1
+            row["_members"].append(p)
             reached = p.reached_current_score_at
             if reached is not None and (row["_reached"] is None or reached > row["_reached"]):
                 row["_reached"] = reached
@@ -259,8 +262,28 @@ class ContestEngine:
         out: List[dict] = []
         for rank, row in enumerate(ordered, start=1):
             reached = row.pop("_reached")
+            members = row.pop("_members")
+            # The three who carried the team, for the header portraits. Members
+            # on zero are left out: an empty slot is honest, three grey circles
+            # implying contribution are not.
+            top = sorted(
+                (m for m in members if m.score > 0), key=lambda m: (-m.score, m.username)
+            )[:_TOP_MEMBERS]
             out.append(
-                {**row, "rank": rank, "reached_current_score_at": reached.isoformat() if reached else None}
+                {
+                    **row,
+                    "rank": rank,
+                    "reached_current_score_at": reached.isoformat() if reached else None,
+                    "top_members": [
+                        {
+                            "username": m.username,
+                            "nickname": m.nickname,
+                            "avatar_url": m.avatar_url,
+                            "score": m.score,
+                        }
+                        for m in top
+                    ],
+                }
             )
         return out
 
