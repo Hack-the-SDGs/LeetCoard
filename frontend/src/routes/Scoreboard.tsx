@@ -33,7 +33,12 @@ export default function Scoreboard() {
       <div className="flex h-screen w-screen items-center justify-center">
         <div className="text-center">
           <div className="font-display text-[28px] font-bold tracking-label">正在連線</div>
-          <div className="mt-2 font-mono text-[11px] text-paper-faint">等待後端資料串流</div>
+          {/* Without this the screen is identical whether the backend is down,
+              the API address is wrong or it is simply still connecting — and it
+              stays that way, on a projector, in front of a class. */}
+          <div className="mt-2 font-mono text-[11px] text-paper-faint">
+            {conn.error ? `連線失敗（${conn.error}）· 重試 ${conn.reconnects} 次` : "等待後端資料串流"}
+          </div>
         </div>
       </div>
     );

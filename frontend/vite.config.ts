@@ -14,7 +14,10 @@ export default defineConfig({
   },
   build: {
     outDir: "dist",
-    sourcemap: true,
+    // The dashboard's source map is uploaded with the rest of dist/, which
+    // hands anyone who opens devtools the exact admin write surface that
+    // `openapi_url=None` was set to keep off the classroom network.
+    sourcemap: false,
     target: "esnext",
   },
 });

@@ -1,0 +1,9 @@
+# Served by Cloudflare for every asset in dist/.
+# The dashboard keeps the admin token in localStorage, so a page that can frame
+# it can drive its controls with the teacher's own credentials.
+/*
+  X-Frame-Options: DENY
+  Content-Security-Policy: frame-ancestors 'none'; base-uri 'self'; object-src 'none'
+  X-Content-Type-Options: nosniff
+  Referrer-Policy: strict-origin-when-cross-origin
+  Permissions-Policy: camera=(), microphone=(), geolocation=()
