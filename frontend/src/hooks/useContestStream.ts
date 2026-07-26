@@ -93,6 +93,15 @@ export interface UseStreamOpts {
   viewPassword?: string | null;
 }
 
+/**
+ * The server heartbeats every 15s. Three missed beats means the socket is dead
+ * even though `EventSource` still believes it is open — the usual outcome of a
+ * laptop sleeping or a network changing while the tab sat in the background.
+ * Without this the board just stops updating, silently, until someone reloads.
+ */
+const STALE_AFTER_MS = 45_000;
+const WATCHDOG_EVERY_MS = 10_000;
+
 export function useContestStream(opts: UseStreamOpts) {
   const [state, dispatch] = useReducer(reducer, initial);
   const reconnectRef = useRef<number | null>(null);
@@ -101,6 +110,7 @@ export function useContestStream(opts: UseStreamOpts) {
   useEffect(() => {
     let es: EventSource | null = null;
     let cancelled = false;
+    let lastBeat = Date.now();
 
     const isAdmin = opts.audience === "admin";
     const snapshotPath = isAdmin ? "/api/admin/snapshot" : "/api/snapshot";
@@ -124,52 +134,64 @@ export function useContestStream(opts: UseStreamOpts) {
       if (!isAdmin && opts.viewPassword) params.view = opts.viewPassword;
 
       es = new EventSource(streamUrl(streamPath, params));
-      es.onopen = () => dispatch({ type: "conn", conn: { connected: true, error: null } });
+      lastBeat = Date.now();
+
+      // Every event is a named one, so `onmessage` never fires — the liveness
+      // stamp has to go on each listener. This wrapper is the only way it does
+      // not get forgotten when a new event type is added.
+      const on = (name: string, handle: (data: MessageEvent) => void) =>
+        es?.addEventListener(name, (e) => {
+          lastBeat = Date.now();
+          handle(e as MessageEvent);
+        });
+
+      es.onopen = () => {
+        lastBeat = Date.now();
+        dispatch({ type: "conn", conn: { connected: true, error: null } });
+      };
       es.onerror = () => {
         dispatch({ type: "conn", conn: { connected: false, error: "stream error" } });
         es?.close();
         scheduleRetry();
       };
 
-      es.addEventListener("snapshot", (e) =>
-        dispatch({ type: "snapshot", snapshot: JSON.parse((e as MessageEvent).data) }),
-      );
-      es.addEventListener("leaderboard_update", (e) => {
-        const d = JSON.parse((e as MessageEvent).data);
+      on("snapshot", (e) => dispatch({ type: "snapshot", snapshot: JSON.parse(e.data) }));
+      on("leaderboard_update", (e) => {
+        const d = JSON.parse(e.data);
         dispatch({
           type: "leaderboard",
           leaderboard: d.leaderboard,
           groupLeaderboard: d.group_leaderboard,
         });
       });
-      es.addEventListener("submission_event", (e) =>
-        dispatch({ type: "submission_event", event: JSON.parse((e as MessageEvent).data) }),
+      on("submission_event", (e) =>
+        dispatch({ type: "submission_event", event: JSON.parse(e.data) }),
       );
-      es.addEventListener("problems_updated", (e) => {
-        const d = JSON.parse((e as MessageEvent).data);
+      on("problems_updated", (e) => {
+        const d = JSON.parse(e.data);
         dispatch({ type: "problems", problems: d.problems });
       });
-      es.addEventListener("groups_updated", (e) => {
-        const d = JSON.parse((e as MessageEvent).data);
+      on("groups_updated", (e) => {
+        const d = JSON.parse(e.data);
         dispatch({ type: "groups", groups: d.groups });
       });
-      es.addEventListener("participants_updated", (e) => {
-        const d = JSON.parse((e as MessageEvent).data);
+      on("participants_updated", (e) => {
+        const d = JSON.parse(e.data);
         if (d.participants_admin) {
           dispatch({ type: "participants_admin", participants: d.participants_admin });
         }
       });
-      es.addEventListener("contest_reset", (e) => {
-        const d = JSON.parse((e as MessageEvent).data);
+      on("contest_reset", (e) => {
+        const d = JSON.parse(e.data);
         dispatch({ type: "reset", snapshot: d.snapshot });
       });
       // Sent when the view password changes; the retry below re-checks it.
-      es.addEventListener("closed", () => {
+      on("closed", () => {
         es?.close();
         dispatch({ type: "conn", conn: { connected: false } });
         scheduleRetry();
       });
-      es.addEventListener("ping", () => undefined);
+      on("ping", () => undefined);
     };
 
     /**
@@ -202,10 +224,33 @@ export function useContestStream(opts: UseStreamOpts) {
       if (!cancelled) openStream();
     };
 
+    /** Drop a socket that has gone quiet and start a fresh one. */
+    const revive = () => {
+      if (cancelled || Date.now() - lastBeat < STALE_AFTER_MS) return;
+      dispatch({ type: "conn", conn: { connected: false, error: "stream stalled" } });
+      es?.close();
+      es = null;
+      lastBeat = Date.now(); // don't stack reconnects while the new one opens
+      // Through scheduleRetry, not connect(): an `onerror` retry may already be
+      // pending, and two connects would leave the first EventSource orphaned —
+      // a live browser connection and a server-side subscriber nobody closes.
+      scheduleRetry();
+    };
+
+    const watchdog = window.setInterval(revive, WATCHDOG_EVERY_MS);
+    // The interval is throttled to a crawl while hidden, so returning to the
+    // tab checks immediately instead of waiting for the next tick.
+    const onVisible = () => {
+      if (!document.hidden) revive();
+    };
+    document.addEventListener("visibilitychange", onVisible);
+
     void connect();
 
     return () => {
       cancelled = true;
+      window.clearInterval(watchdog);
+      document.removeEventListener("visibilitychange", onVisible);
       if (reconnectRef.current) window.clearTimeout(reconnectRef.current);
       es?.close();
     };

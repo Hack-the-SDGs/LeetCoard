@@ -66,16 +66,45 @@ function useDeferredOrder(rows: LeaderboardRow[], delayMs: number): LeaderboardR
   const timer = useRef<number | null>(null);
   latest.current = rows;
 
+  const snap = () => {
+    if (timer.current !== null) {
+      window.clearTimeout(timer.current);
+      timer.current = null;
+    }
+    setHeld(latest.current.map((row) => ({ username: row.username, rank: row.rank })));
+  };
+
   useEffect(() => {
     const unchanged =
       held.length === rows.length &&
       held.every((h, i) => h.username === rows[i].username && h.rank === rows[i].rank);
-    if (unchanged || timer.current !== null) return;
+    if (unchanged) return;
+    // The delay buys a beat of animation. A hidden tab has no animation to
+    // watch and throttles the timer to a standstill, which would leave the rank
+    // column counting 1,2,3 down a list whose scores are no longer in order.
+    // Checked before the pending-timer guard on purpose: a timer scheduled just
+    // before the tab was hidden never fires, and would otherwise block this
+    // branch for as long as the tab stays in the background.
+    if (document.hidden) {
+      snap();
+      return;
+    }
+    if (timer.current !== null) return;
     timer.current = window.setTimeout(() => {
       timer.current = null;
       setHeld(latest.current.map((row) => ({ username: row.username, rank: row.rank })));
     }, delayMs);
   }, [rows, held, delayMs]);
+
+  // Coming back to the tab: whatever was pending was queued minutes ago and is
+  // stale. Land on the truth now rather than animating through history.
+  useEffect(() => {
+    const onVisible = () => {
+      if (!document.hidden) snap();
+    };
+    document.addEventListener("visibilitychange", onVisible);
+    return () => document.removeEventListener("visibilitychange", onVisible);
+  }, []);
 
   useEffect(
     () => () => {

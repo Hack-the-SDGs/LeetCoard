@@ -4,6 +4,8 @@ const SPEED_PX_PER_SEC = 26; // slow enough to read a name in passing
 const PAUSE_MS = 2400;
 /** Fast enough to read as a rewind rather than a second pass over the names. */
 const REWIND_MS = 450;
+/** Longest gap between frames that still counts as real elapsed time. */
+const MAX_STEP_MS = 100;
 
 type Phase = "hold-top" | "down" | "hold-bottom" | "rewind";
 
@@ -40,7 +42,10 @@ export function useAutoScroll(ref: React.RefObject<HTMLElement | null>, enabled:
 
     const step = (now: number) => {
       frame = requestAnimationFrame(step);
-      const dt = now - last;
+      // A hidden tab stops serving frames, so the first frame back reports the
+      // whole absence as elapsed time. Uncapped, that lands the list at the
+      // bottom in one jump. Cap at a few dropped frames' worth.
+      const dt = Math.min(now - last, MAX_STEP_MS);
       last = now;
 
       // Rows come and go, so the travel distance is re-read every frame.
