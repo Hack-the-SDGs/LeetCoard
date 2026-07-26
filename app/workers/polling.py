@@ -33,6 +33,11 @@ log = logging.getLogger("gdg.polling")
 PROFILE_REFRESH_SEC = 600  # refresh every 10 min while a session is live
 _MAX_BACKOFF_DOUBLINGS = 6  # 5s * 2^6 = 320s, well past any sane max interval
 
+# Process-wide ceiling on concurrent beat-% lookups against leetcode.com. Four
+# is plenty for enrichment nobody is waiting on, and it holds no matter how many
+# students happen to submit in the same polling round.
+_ENRICH_SEM = asyncio.Semaphore(4)
+
 
 def backoff_delay(idle_rounds: int, min_sec: float, max_sec: float) -> float:
     """Exponential back-off for one student, clamped to the configured band."""
@@ -273,7 +278,8 @@ class PollingWorker:
             return
 
         async def enrich(entry: dict) -> None:
-            pct = await self._client.get_submission_runtime_percentile(str(entry["id"]))
+            async with _ENRICH_SEM:
+                pct = await self._client.get_submission_runtime_percentile(str(entry["id"]))
             if pct is not None:
                 entry["runtimePercentile"] = pct
 
@@ -281,6 +287,13 @@ class PollingWorker:
         # go to leetcode.com rather than the submissions API, and run serially
         # they could hold a slot for the timeout multiplied by POLL_RECENT_LIMIT
         # while other students waited their turn.
+        #
+        # Bounded, though, and bounded process-wide rather than per call: the
+        # gather itself is per-student, so the minute a problem opens and a
+        # class of 70 all submit, an unbounded version aims the whole fleet's
+        # fresh ACs at leetcode.com at once — hundreds of authenticated requests
+        # from the teacher's personal account, which is how an account gets rate
+        # limited or locked.
         await asyncio.gather(*(enrich(s) for s in targets), return_exceptions=True)
 
     async def _poll_one(self, username: str) -> int:

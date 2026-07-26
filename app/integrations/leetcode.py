@@ -12,10 +12,20 @@ import logging
 from dataclasses import dataclass, field
 from datetime import datetime, timedelta, timezone
 from typing import List, Optional
+from urllib.parse import quote
 
 import httpx
 
 log = logging.getLogger("gdg.leetcode")
+
+
+def _seg(value: str) -> str:
+    """Escape one path segment.
+
+    A handle or slug containing `?`, `#` or `..` would otherwise rewrite the
+    outbound request rather than name a resource in it.
+    """
+    return quote(str(value), safe="")
 
 
 class LeetCodeError(RuntimeError):
@@ -69,8 +79,13 @@ class LeetCodeClient:
                 self._idx = (self._idx + 1) % n
                 if cand.cooled_until is None or cand.cooled_until <= now:
                     return cand
-            # All cooling — return the one with earliest cooldown anyway.
-            return min(self._states, key=lambda s: s.cooled_until or now)
+            # Every session is cooling. Handing one back anyway made the
+            # cooldown a no-op for the single-cookie case that is actually
+            # deployed: a 429 cooled the session and the very next call used it,
+            # so the response to being rate limited was to keep hammering from
+            # the teacher's own account. Beat-% enrichment is best-effort — the
+            # callers all treat None as "skip it this round".
+            return None
 
     def _cool(self, sess: Optional[_SessionState], seconds: float) -> None:
         if not sess:
@@ -94,6 +109,9 @@ class LeetCodeClient:
         # leetcode.com GraphQL call, in a header, which `_graphql` does.
         if not self._client:
             raise LeetCodeError("client not started")
+        # `path` is already built from `_seg`-escaped components; joining by
+        # concatenation keeps the base's own path prefix, which urljoin would
+        # discard.
         url = f"{self.api_base.rstrip('/')}{path}"
         params = dict(params or {})
         sess: Optional[_SessionState] = None
@@ -133,13 +151,13 @@ class LeetCodeClient:
             return False
 
     async def get_user_profile(self, username: str) -> dict:
-        data = await self._get(f"/user/{username}")
+        data = await self._get(f"/user/{_seg(username)}")
         if not isinstance(data, dict):
             raise LeetCodeError(f"unexpected user profile shape for {username}")
         return data
 
     async def get_problem(self, slug: str) -> dict:
-        data = await self._get(f"/problem/{slug}")
+        data = await self._get(f"/problem/{_seg(slug)}")
         if not isinstance(data, dict):
             raise LeetCodeError(f"unexpected problem shape for {slug}")
         return data
@@ -173,7 +191,7 @@ class LeetCodeClient:
 
     async def get_recent_submissions(self, username: str, limit: int = 5) -> List[dict]:
         """Returns the most recent N submissions across all problems for `username`."""
-        data = await self._get(f"/user/{username}/submissions", params={"limit": limit})
+        data = await self._get(f"/user/{_seg(username)}/submissions", params={"limit": limit})
         return _coerce_submission_list(data)
 
     async def get_submission_runtime_percentile(self, submission_id: str) -> Optional[float]:
@@ -209,8 +227,14 @@ class LeetCodeClient:
             "cookie": f"LEETCODE_SESSION={sess.cookie}",
         }
         try:
+            # follow_redirects=False: the session cookie is set by hand, and
+            # httpx strips only `Authorization` across a cross-origin redirect —
+            # a manual `Cookie` header rides along to wherever it is sent.
             resp = await self._client.post(
-                "https://leetcode.com/graphql/", json=payload, headers=headers,
+                "https://leetcode.com/graphql/",
+                json=payload,
+                headers=headers,
+                follow_redirects=False,
             )
         except (httpx.RequestError, asyncio.TimeoutError) as exc:
             self._cool(sess, 30)
