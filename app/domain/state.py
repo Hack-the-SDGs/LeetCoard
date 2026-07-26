@@ -600,6 +600,12 @@ class ContestEngine:
 
         A row without a group leaves an existing assignment alone, so re-importing
         a name list never silently unassigns everyone.
+
+        Correcting a handle's capitalisation re-keys the existing student rather
+        than creating a second one. LeetCode handles are case-insensitive, so
+        `Alice` and `alice` are one person — left alone they would both appear on
+        the projector, both be polled, and the score would stay stranded on
+        whichever spelling was there first.
         """
         created = 0
         updated = 0
@@ -607,6 +613,7 @@ class ContestEngine:
         new_usernames: List[str] = []
         valid_groups = {g.id for g in self.contest.groups}
         async with self._lock:
+            by_folded = {u.lower(): u for u in self.contest.participants}
             for username, nickname, group_id in rows:
                 u = (username or "").strip()
                 n = (nickname or "").strip()
@@ -617,6 +624,13 @@ class ContestEngine:
                     errors.append(f"{u}：組別 {group_id} 不存在（可用 1–{len(valid_groups)}）")
                     continue
                 existing = self.contest.participants.get(u)
+                if existing is None:
+                    previous_key = by_folded.get(u.lower())
+                    if previous_key is not None:
+                        existing = self.contest.participants.pop(previous_key)
+                        existing.username = u
+                        self.contest.participants[u] = existing
+                        by_folded[u.lower()] = u
                 if existing is not None:
                     existing.nickname = n
                     if group_id is not None:
@@ -626,6 +640,7 @@ class ContestEngine:
                     self.contest.participants[u] = Participant(
                         username=u, nickname=n, group_id=group_id
                     )
+                    by_folded[u.lower()] = u
                     created += 1
                     new_usernames.append(u)
             self._broadcast_participants_admin()

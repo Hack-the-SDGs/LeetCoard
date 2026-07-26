@@ -87,13 +87,23 @@ async def load_roster_file(engine: "ContestEngine", path: Path, *, max_group: in
         log.info("No roster file at %s — leaving the existing roster alone.", path)
         return
 
+    # Anything at all: a Big5 file saved out of Excel on a zh-TW machine raises
+    # UnicodeDecodeError, an enormous line raises csv.Error. Neither is worth
+    # taking the whole board down for five minutes before class — a roster that
+    # cannot be read is treated exactly like one that is not there.
     try:
         text = path.read_text(encoding="utf-8")
-    except OSError as exc:
-        log.error("Could not read roster file %s: %s", path, exc)
+        rows, errors = parse_roster(text, max_group=max_group)
+    except Exception as exc:
+        log.error(
+            "Could not read roster file %s (%s: %s). Leaving the roster as it is. "
+            "If it came out of Excel, save it as UTF-8.",
+            path,
+            type(exc).__name__,
+            exc,
+        )
         return
 
-    rows, errors = parse_roster(text, max_group=max_group)
     for message in errors:
         log.error("roster %s: %s", path.name, message)
 
