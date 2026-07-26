@@ -579,7 +579,11 @@ class ContestEngine:
             if problem is None:
                 raise KeyError(title_slug)
             if self._apply_open(problem, is_open):
-                self._store.mark_dirty()
+                # Flushed, not merely marked dirty: the coalesced write is 200ms
+                # away, and losing it means the window this opened is absent on
+                # restart while the problem was visibly open on the projector —
+                # every AC scored in that stretch silently counts for nothing.
+                await self._store.flush_now()
                 self._broadcast_problems()
             return problem
 
@@ -587,7 +591,7 @@ class ContestEngine:
         async with self._lock:
             changed = sum(self._apply_open(p, is_open) for p in self.contest.problems)
             if changed:
-                self._store.mark_dirty()
+                await self._store.flush_now()  # same reason as set_problem_open
                 self._broadcast_problems()
             return changed
 
