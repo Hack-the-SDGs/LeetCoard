@@ -1,5 +1,5 @@
 import { AnimatePresence, motion } from "framer-motion";
-import { teamColor, type TeamColors } from "../../lib/color";
+import { readableInk, teamColor, type TeamColors } from "../../lib/color";
 import { fmtClock } from "../../lib/format";
 import type { SubmissionEventPayload } from "../../lib/types";
 
@@ -90,7 +90,7 @@ function Verdict({ event, color }: { event: SubmissionEventPayload; color: strin
   // Accepted runs wear the team colour — that is the moment the team scored.
   // Everything else is a hairline outline, present but not shouting.
   const style = event.is_accepted
-    ? { background: color, color: "#0E1113" }
+    ? { background: color, color: readableInk(color) }
     : { boxShadow: "inset 0 0 0 1px #363E44", color: "#9AA1A6" };
   return (
     <span

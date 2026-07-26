@@ -1,4 +1,5 @@
 import { useEffect, useState } from "react";
+import { readableInk } from "../../lib/color";
 import { profileUrl } from "../../lib/leetcode";
 
 interface Props {
@@ -50,7 +51,11 @@ export default function Avatar({ nickname, avatarUrl, color, size, profileFor }:
       ) : (
         <span
           className="flex h-full w-full items-center justify-center font-display font-bold"
-          style={{ background: color, color: "#0E1113", fontSize: Math.round(size * 0.52) }}
+          style={{
+            background: color,
+            color: readableInk(color),
+            fontSize: Math.round(size * 0.52),
+          }}
         >
           {nickname.slice(0, 1)}
         </span>

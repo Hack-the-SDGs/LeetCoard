@@ -1,4 +1,4 @@
-import { teamColor, teamColors } from "../../lib/color";
+import { readableInk, teamColor, teamColors } from "../../lib/color";
 import { fmtClock } from "../../lib/format";
 import type { AdminSnapshot } from "../../lib/types";
 
@@ -40,7 +40,7 @@ export default function EventsPanel({ snapshot }: { snapshot: AdminSnapshot }) {
                   className="flex h-[18px] items-center justify-center font-mono text-[10px] font-bold"
                   style={
                     event.is_accepted
-                      ? { background: color, color: "#0E1113" }
+                      ? { background: color, color: readableInk(color) }
                       : { boxShadow: "inset 0 0 0 1px #363E44", color: "#9AA1A6" }
                   }
                 >
