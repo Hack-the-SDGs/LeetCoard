@@ -90,8 +90,13 @@ export default function PracticePanel({ snapshot, token }: Props) {
       "組別已更新",
     );
 
-  const setAll = (open: boolean) =>
-    run(
+  const setAll = (open: boolean) => {
+    // Closing everything is recoverable; opening everything puts the whole
+    // term's problem list on the projector at once, which is not.
+    if (open && !window.confirm("這會把清單上所有題目同時放到投影畫面上。要繼續嗎？")) {
+      return;
+    }
+    return run(
       open ? "open-all" : "close-all",
       () =>
         api("/api/admin/problems/open-all", {
@@ -101,6 +106,7 @@ export default function PracticePanel({ snapshot, token }: Props) {
         }),
       open ? "已開放全部題目" : "已關閉全部題目",
     );
+  };
 
   const reset = () => {
     const ok = window.confirm(

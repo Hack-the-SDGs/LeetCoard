@@ -86,22 +86,17 @@ class LeetCodeClient:
 
     # -------- low-level GET --------
 
-    async def _get(
-        self,
-        path: str,
-        *,
-        params: Optional[dict] = None,
-        with_session: bool = False,
-    ) -> dict | list:
+    async def _get(self, path: str, *, params: Optional[dict] = None) -> dict | list:
+        # Deliberately has no way to attach a session cookie. It used to take
+        # `with_session=True`, which put LEETCODE_SESSION in the query string —
+        # one keyword away from writing the teacher's cookie into a third
+        # party's access log. The cookie only belongs on the direct
+        # leetcode.com GraphQL call, in a header, which `_graphql` does.
         if not self._client:
             raise LeetCodeError("client not started")
         url = f"{self.api_base.rstrip('/')}{path}"
         params = dict(params or {})
         sess: Optional[_SessionState] = None
-        if with_session:
-            sess = await self._pick_session()
-            if sess:
-                params.setdefault("x_leetcode_session", sess.cookie)
 
         try:
             resp = await self._client.get(url, params=params)

@@ -297,9 +297,11 @@ npm run build
 - `.env` 的 `CORS_ORIGINS` 寫入前端網域
 
 > **狀態檔格式會變**：`student_id` 已改名 `nickname`，題目的 `opened_at`/`closed_at`
-> 已換成 `windows` 區間清單。載入不相容的舊檔會驗證失敗並退回空白狀態，而每次寫入
-> 都會把主檔輪替成 `.bak`，所以連備份也會在兩次存檔內被覆蓋。**升級前先刪掉
-> `data/contest.json` 與 `data/contest.json.bak`**，再重新匯入名單與題目。
+> 已換成 `windows` 區間清單。載入不相容的舊檔會驗證失敗並退回預設狀態——**而預設
+> 狀態現在帶著十五題**，所以畫面看起來像是設定好的，不會明顯空白，很容易誤以為載入
+> 成功。每次寫入又會把主檔輪替成 `.bak`，連備份都會在兩次存檔內被覆蓋。**升級前先
+> 刪掉 `data/contest.json` 與 `data/contest.json.bak`**，並在開機日誌確認
+> `Loaded contest state from ...` 這行有出現。
 
 範例 systemd unit：
 
