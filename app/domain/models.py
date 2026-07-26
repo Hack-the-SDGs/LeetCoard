@@ -164,6 +164,49 @@ class Problem(BaseModel):
         return self.points + best_bonus
 
 
+# This term's set: five rounds of three, in teaching order. Every problem starts
+# closed — the board shows nothing until someone opens one.
+_DEFAULT_PROBLEMS = (
+    ("add-two-integers", "Add Two Integers", "2235", Difficulty.easy),
+    ("find-the-maximum-achievable-number", "Find the Maximum Achievable Number", "2769", Difficulty.easy),
+    ("convert-the-temperature", "Convert the Temperature", "2469", Difficulty.easy),
+    ("smallest-even-multiple", "Smallest Even Multiple", "2413", Difficulty.easy),
+    ("rectangle-area", "Rectangle Area", "223", Difficulty.medium),
+    ("a-number-after-a-double-reversal", "A Number After a Double Reversal", "2119", Difficulty.easy),
+    ("number-of-steps-to-reduce-a-number-to-zero", "Number of Steps to Reduce a Number to Zero", "1342", Difficulty.easy),
+    ("fibonacci-number", "Fibonacci Number", "509", Difficulty.easy),
+    ("reverse-integer", "Reverse Integer", "7", Difficulty.medium),
+    ("design-parking-system", "Design Parking System", "1603", Difficulty.easy),
+    ("find-consecutive-integers-from-a-data-stream", "Find Consecutive Integers from a Data Stream", "2526", Difficulty.medium),
+    ("peeking-iterator", "Peeking Iterator", "284", Difficulty.medium),
+    ("concatenation-of-array", "Concatenation of Array", "1929", Difficulty.easy),
+    ("two-sum", "Two Sum", "1", Difficulty.easy),
+    ("maximum-subarray", "Maximum Subarray", "53", Difficulty.medium),
+)
+
+_POINTS_BY_DIFFICULTY = {Difficulty.easy: 5, Difficulty.medium: 10, Difficulty.hard: 20}
+
+# Runtime brackets, same for every problem so students learn one rule.
+_DEFAULT_TIERS = ((90.0, 4), (60.0, 2), (20.0, 1))
+
+
+def default_problems() -> List["Problem"]:
+    return [
+        Problem(
+            title_slug=slug,
+            title=title,
+            frontend_id=frontend_id,
+            difficulty=difficulty,
+            points=_POINTS_BY_DIFFICULTY[difficulty],
+            order=order,
+            beat_bonus_tiers=[
+                BonusTier(min_beat_pct=pct, bonus_pts=pts) for pct, pts in _DEFAULT_TIERS
+            ],
+        )
+        for order, (slug, title, frontend_id, difficulty) in enumerate(_DEFAULT_PROBLEMS)
+    ]
+
+
 class Participant(BaseModel):
     username: str
     nickname: str  # real name, shown on the public board instead of the handle
@@ -233,7 +276,7 @@ class Contest(BaseModel):
     """Full persistent practice state. Mirrored to disk as JSON on every change."""
 
     groups: List[Group] = Field(default_factory=default_groups)
-    problems: List[Problem] = Field(default_factory=list)
+    problems: List[Problem] = Field(default_factory=default_problems)
     participants: Dict[str, Participant] = Field(default_factory=dict)  # keyed by username
 
     seen_submission_ids: Set[str] = Field(default_factory=set)
