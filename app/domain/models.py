@@ -65,15 +65,16 @@ class Group(BaseModel):
     color: str  # css hex, e.g. "#E4572E"
 
 
-# Six hues at matched lightness so no team reads as louder than another, and
-# far enough apart to stay separable on a projector from the back of a room.
+# The real 2026 classroom teams. Names and colours are the owner's; they are
+# defaults only — the console can re-skin any of them live, and whatever is in
+# the state file wins over these.
 _DEFAULT_GROUPS = (
-    (1, "第一組", "#E4572E"),
-    (2, "第二組", "#E8B33C"),
-    (3, "第三組", "#4FA96B"),
-    (4, "第四組", "#3FA7C4"),
-    (5, "第五組", "#7B72D6"),
-    (6, "第六組", "#D45C9B"),
+    (1, "悅靈碼農", "#0181E5"),
+    (2, "冰炫風", "#007A7D"),
+    (3, "沙漠風暴", "#EDA301"),
+    (4, "烏龍麵", "#7A00E7"),
+    (5, "吾螈", "#7CC6F3"),
+    (6, "歐趴雞肉", "#87E602"),
 )
 
 

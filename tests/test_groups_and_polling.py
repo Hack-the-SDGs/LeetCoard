@@ -10,7 +10,15 @@ import pytest
 from app.core.config import Settings
 from app.core.sse import Broadcaster
 from app.core.storage import ContestStore
-from app.domain.models import Contest, Difficulty, Group, Participant, Problem, Window
+from app.domain.models import (
+    Contest,
+    Difficulty,
+    Group,
+    Participant,
+    Problem,
+    Window,
+    default_groups,
+)
 from app.domain.state import ContestEngine
 from app.workers.polling import backoff_delay, rate_limit_scale
 
@@ -137,7 +145,7 @@ async def test_renaming_and_recolouring_teams(tmp_path: Path):
     group = engine.contest.groups[0]
     assert group.name == "紅隊"
     assert group.color == "#FF0000"
-    assert engine.contest.groups[1].name == "第二組"  # untouched
+    assert engine.contest.groups[1].name == default_groups()[1].name  # untouched
 
 
 @pytest.mark.asyncio
