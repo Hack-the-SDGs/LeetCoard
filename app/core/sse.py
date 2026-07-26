@@ -85,10 +85,17 @@ class Broadcaster:
             targets = [s for s in self.subs if s.audience == audience]
         for sub in targets:
             sub.closed = True
-            try:
-                sub.queue.put_nowait({"event": "closed", "data": {}})
-            except asyncio.QueueFull:
-                pass
+            # A full queue must not swallow the goodbye, or the viewer keeps
+            # streaming until the next event or the idle timeout.
+            while True:
+                try:
+                    sub.queue.put_nowait({"event": "closed", "data": {}})
+                    break
+                except asyncio.QueueFull:
+                    try:
+                        sub.queue.get_nowait()
+                    except asyncio.QueueEmpty:
+                        break
         if targets:
             log.info("SSE closing %d %s subscriber(s)", len(targets), audience)
 
@@ -105,14 +112,16 @@ class Broadcaster:
                     # Heartbeat — keeps proxies from killing the connection.
                     yield {"event": "ping", "data": json.dumps({"ts": _now_iso()})}
                     continue
-                # Deliver what we already have in hand before hanging up, so a
-                # closing client gets the `closed` event and can re-authenticate
-                # immediately instead of waiting out a blind reconnect.
+                # Drain the backlog and hang up on the goodbye itself. Breaking
+                # on `sub.closed` alone dropped the `closed` event whenever a
+                # queued item was collected first, which is the common case —
+                # and then the client fell back to a blind reconnect instead of
+                # re-authenticating straight away.
                 yield {
                     "event": item["event"],
                     "data": json.dumps(item["data"], ensure_ascii=False, default=str),
                 }
-                if sub.closed:
+                if item["event"] == "closed":
                     break
         finally:
             await self.unsubscribe(sub)

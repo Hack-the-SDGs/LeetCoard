@@ -281,7 +281,16 @@ export default function ProblemsPanel({ snapshot, token }: Props) {
                 </span>
 
                 <button
-                  onClick={() => setDraft((d) => d.filter((_, idx) => idx !== i))}
+                  onClick={() => {
+                    // Removing a saved problem zeroes it for the whole class
+                    // the moment 儲存 is pressed. It can be put back, but not
+                    // by accident and not without someone noticing.
+                    const label = row.title ?? row.title_slug;
+                    if (saved && !window.confirm(`從清單移除「${label}」？儲存後全班在這題的分數會歸零。`)) {
+                      return;
+                    }
+                    setDraft((d) => d.filter((_, idx) => idx !== i));
+                  }}
                   title="刪除這題"
                   className="text-paper-faint hover:text-paper"
                 >

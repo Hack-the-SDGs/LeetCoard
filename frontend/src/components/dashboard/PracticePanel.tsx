@@ -261,9 +261,6 @@ export default function PracticePanel({ snapshot, token }: Props) {
           <Stat label="追蹤人數" value={status ? String(status.tracked_users) : "—"} />
           <Stat label="活躍人數" value={status ? String(status.active_users) : "—"} />
         </dl>
-        <p className="mt-2 text-[11px] leading-relaxed text-paper-faint">
-          全部題目關閉時不會呼叫 LeetCode API。活躍的學員每 5 秒查一次，安靜的人逐步退到 60 秒。
-        </p>
       </div>
     </section>
   );

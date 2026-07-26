@@ -6,8 +6,9 @@ import asyncio
 import logging
 from contextlib import asynccontextmanager
 
-from fastapi import FastAPI
+from fastapi import FastAPI, Request
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.responses import JSONResponse
 
 from .core.auth import ViewGate
 from .core.config import get_settings
@@ -25,11 +26,27 @@ logging.basicConfig(
 )
 log = logging.getLogger("gdg.main")
 
+# Bodies are read and parsed before dependencies resolve, so an unauthenticated
+# caller can otherwise make the process allocate whatever it likes.
+_MAX_BODY_BYTES = 2 * 1024 * 1024
+
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     settings = get_settings()
     log.info("Starting backend sessions=%d", len(settings.session_list))
+
+    if settings.admin_token == "change-me":
+        log.error(
+            "ADMIN_TOKEN is still the placeholder value. Anyone who reaches this "
+            "port can open the console, reset scores and delete the roster. "
+            "Set ADMIN_TOKEN in .env before letting anyone else near it."
+        )
+    if settings.cors_list == ["*"]:
+        log.warning(
+            "CORS_ORIGINS is '*'. Fine on a laptop; name the real front-end "
+            "origin before deploying."
+        )
 
     settings.data_dir.mkdir(parents=True, exist_ok=True)
     store = ContestStore(settings.state_file, settings.state_backup_file)
@@ -84,6 +101,17 @@ def create_app() -> FastAPI:
         allow_methods=["*"],
         allow_headers=["*"],
     )
+    @app.middleware("http")
+    async def limit_body_size(request: Request, call_next):
+        declared = request.headers.get("content-length")
+        if declared is not None:
+            try:
+                if int(declared) > _MAX_BODY_BYTES:
+                    return JSONResponse({"detail": "request body too large"}, status_code=413)
+            except ValueError:
+                return JSONResponse({"detail": "bad content-length"}, status_code=400)
+        return await call_next(request)
+
     app.include_router(public_routes.router, prefix="/api", tags=["public"])
     app.include_router(admin_routes.router, prefix="/api/admin", tags=["admin"])
     return app

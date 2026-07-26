@@ -11,7 +11,7 @@ from app.core.config import Settings
 from app.core.scoring import compute_beat_bonus
 from app.core.sse import Broadcaster
 from app.core.storage import ContestStore
-from app.domain.models import BonusTier, Contest, Difficulty, Participant, Problem
+from app.domain.models import BonusTier, Contest, Difficulty, Participant, Problem, Window
 from app.domain.state import ContestEngine
 
 # ---------------------------------------------------------------------------
@@ -76,7 +76,7 @@ def _open_problem(slug: str, difficulty: Difficulty, points: int, order: int,
         order=order,
         beat_bonus_tiers=tiers,
         is_open=True,
-        opened_at=START,
+        windows=[Window(opened_at=START)],
     )
 
 

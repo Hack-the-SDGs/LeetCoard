@@ -114,6 +114,13 @@ class PollingWorker:
         next_refresh = datetime.now(timezone.utc) + timedelta(seconds=PROFILE_REFRESH_SEC)
         while not self._stop.is_set():
             try:
+                # Profiles are part of "calling the API", so they follow the
+                # same gate as submissions. Without this the worker kept
+                # fetching all night with every problem closed.
+                if not self._engine.is_polling_window():
+                    await asyncio.sleep(2)
+                    continue
+
                 now = datetime.now(timezone.utc)
                 if now >= next_refresh:
                     for u in self._engine.usernames():
@@ -124,7 +131,11 @@ class PollingWorker:
                 except asyncio.TimeoutError:
                     continue
                 self._enqueued.discard(username)
-                await self._fetch_profile(username)
+                # Share the concurrency budget with submission polling, and
+                # pace the drain so a roster-wide refresh isn't a burst.
+                async with self._sem:
+                    await self._fetch_profile(username)
+                await asyncio.sleep(1.0 / max(1.0, self._cfg.poll_max_rps))
             except asyncio.CancelledError:
                 break
             except Exception:
@@ -175,12 +186,23 @@ class PollingWorker:
 
     async def _loop(self) -> None:
         next_due: dict[str, datetime] = {}
+        was_polling = False
         log.info("Polling worker started")
         while not self._stop.is_set():
             try:
                 if not self._engine.is_polling_window():
+                    was_polling = False
                     await asyncio.sleep(2)
                     continue
+
+                if not was_polling:
+                    # Everything queued up while the window was shut is now
+                    # overdue, so resuming would fire the whole roster in one
+                    # instant — the surest way to earn a 429 mid-class. Start
+                    # the schedule from scratch instead and let the spread
+                    # below lay it out again.
+                    next_due.clear()
+                    was_polling = True
 
                 usernames = self._engine.usernames()
                 if not usernames:
@@ -247,23 +269,34 @@ class PollingWorker:
             and str(s.get("id") or "") not in seen
             and s.get("id") is not None
         ]
-        for s in targets:
-            sub_id = str(s["id"])
-            pct = await self._client.get_submission_runtime_percentile(sub_id)
+        if not targets:
+            return
+
+        async def enrich(entry: dict) -> None:
+            pct = await self._client.get_submission_runtime_percentile(str(entry["id"]))
             if pct is not None:
-                s["runtimePercentile"] = pct
+                entry["runtimePercentile"] = pct
+
+        # Concurrently, and outside the polling slot the caller released: these
+        # go to leetcode.com rather than the submissions API, and run serially
+        # they could hold a slot for the timeout multiplied by POLL_RECENT_LIMIT
+        # while other students waited their turn.
+        await asyncio.gather(*(enrich(s) for s in targets), return_exceptions=True)
 
     async def _poll_one(self, username: str) -> int:
         """Returns the number of submissions seen for the first time."""
-        async with self._sem:
-            try:
+        try:
+            async with self._sem:
                 subs = await self._client.get_recent_submissions(
                     username, limit=self._cfg.poll_recent_limit
                 )
-                await self._enrich_runtime_percentile(subs)
-                return await self._engine.ingest_submissions(username, subs)
-            except LeetCodeError as exc:
-                log.warning("Poll failed for %s: %s", username, exc)
-            except Exception:
-                log.exception("Unexpected polling error for %s", username)
-            return 0
+            # The slot is released before enrichment so a student with several
+            # fresh ACs cannot block the rest of the fleet behind their detail
+            # lookups.
+            await self._enrich_runtime_percentile(subs)
+            return await self._engine.ingest_submissions(username, subs)
+        except LeetCodeError as exc:
+            log.warning("Poll failed for %s: %s", username, exc)
+        except Exception:
+            log.exception("Unexpected polling error for %s", username)
+        return 0

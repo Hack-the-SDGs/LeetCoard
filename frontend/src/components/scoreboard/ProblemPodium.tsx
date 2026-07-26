@@ -31,10 +31,12 @@ export default function ProblemPodium({ solvers, colors, dimmed }: Props) {
   const ranked = solvers.filter((s) => s.beat_pct != null);
   const hasSpread = ranked.length > 0;
 
-  // Without a session cookie upstream there are no percentiles at all, so rank
-  // by who got there first and drop the bar rather than fake an axis.
-  const byTime = [...solvers].sort((a, b) => (a.solved_at ?? "").localeCompare(b.solved_at ?? ""));
-  const ordered = hasSpread ? ranked : byTime;
+  // Every solver is placed, including those with no percentile. Ranking only
+  // the ones that have one erased anybody whose detail lookup was rate-limited
+  // — they vanished from the podium, the roll and even the overflow count,
+  // while the heading still counted them. The server already orders solvers
+  // fastest first with unknown runtimes last.
+  const ordered = solvers;
   const podium = ordered.slice(0, PODIUM_SIZE);
   const roll = ordered.slice(PODIUM_SIZE, PODIUM_SIZE + ROLL_SIZE);
   const overflow = ordered.length - PODIUM_SIZE - roll.length;

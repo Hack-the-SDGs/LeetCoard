@@ -40,6 +40,16 @@ body {
   border-right: 1px solid var(--rule);
 }
 
+/* The standings drive themselves; a scrollbar there is a control nobody uses
+   and a bright vertical line down a projected image. */
+.no-scrollbar {
+  scrollbar-width: none;
+  -ms-overflow-style: none;
+}
+.no-scrollbar::-webkit-scrollbar {
+  display: none;
+}
+
 ::-webkit-scrollbar {
   width: 6px;
   height: 6px;

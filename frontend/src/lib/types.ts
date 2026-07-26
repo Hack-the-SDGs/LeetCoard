@@ -32,8 +32,6 @@ export interface ProblemPayload {
   color?: string | null;
   beat_bonus_tiers?: BonusTier[];
   is_open: boolean;
-  opened_at: string | null;
-  closed_at: string | null;
   solvers: SolverPayload[];
 }
 

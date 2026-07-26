@@ -10,7 +10,7 @@ import pytest
 from app.core.config import Settings
 from app.core.sse import Broadcaster
 from app.core.storage import ContestStore
-from app.domain.models import Contest, Difficulty, Group, Participant, Problem
+from app.domain.models import Contest, Difficulty, Group, Participant, Problem, Window
 from app.domain.state import ContestEngine
 from app.workers.polling import backoff_delay, rate_limit_scale
 
@@ -28,7 +28,7 @@ def _seed(engine: ContestEngine, participants: dict[str, Participant]) -> None:
         problems=[
             Problem(
                 title_slug="two-sum", difficulty=Difficulty.easy, points=1, order=0,
-                is_open=True, opened_at=START,
+                is_open=True, windows=[Window(opened_at=START)],
             ),
         ],
         participants=participants,

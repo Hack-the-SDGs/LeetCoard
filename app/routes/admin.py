@@ -110,9 +110,11 @@ async def admin_snapshot(request: Request, _: None = Depends(require_admin)) -> 
 @router.get("/stream")
 async def admin_stream(request: Request, _: bool = Depends(admin_token_for_sse)):
     engine = request.app.state.engine
-    sub = await broadcaster.subscribe(audience="admin")
 
     async def event_gen():
+        # Subscribe inside the generator so an abandoned response cannot leave
+        # a subscriber registered with nothing to unsubscribe it.
+        sub = await broadcaster.subscribe(audience="admin")
         yield {
             "event": "snapshot",
             "data": json.dumps(engine.snapshot_dict(audience="admin"), ensure_ascii=False, default=str),

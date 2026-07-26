@@ -21,6 +21,20 @@ def test_password_from_the_environment_is_enforced():
     assert not gate.accepts(None)
 
 
+def test_a_chinese_password_works_rather_than_exploding():
+    """hmac.compare_digest refuses non-ASCII str and raises TypeError, which
+    surfaces as a 500 and takes the whole board down — including for people
+    typing the correct password. This dashboard is in Chinese."""
+    gate = ViewGate("課堂密碼2026")
+    assert gate.accepts("課堂密碼2026")
+    assert not gate.accepts("課堂密碼")
+    assert not gate.accepts("ascii-guess")
+
+    gate.set_override("練習🔒")
+    assert gate.accepts("練習🔒")
+    assert not gate.accepts("練習")
+
+
 def test_surrounding_whitespace_is_forgiven():
     """People paste passwords; a trailing space must not lock them out."""
     gate = ViewGate("  classroom  ")

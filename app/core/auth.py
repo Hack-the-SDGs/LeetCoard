@@ -20,13 +20,29 @@ from fastapi import Depends, HTTPException, Query, Request, status
 from .config import Settings, get_settings
 
 
+def _matches(expected: str, given: str) -> bool:
+    """Constant-time compare that survives non-ASCII secrets.
+
+    `hmac.compare_digest` refuses `str` arguments containing non-ASCII and
+    raises TypeError. Nothing catches that, so it surfaces as a 500 rather than
+    a 401 — and this dashboard is in Chinese, so a Chinese password is the
+    obvious thing for a teacher to type. Comparing the UTF-8 bytes keeps the
+    timing property and accepts any character.
+    """
+    return hmac.compare_digest(expected.encode("utf-8"), given.encode("utf-8"))
+
+
 def _extract_token(request: Request) -> Optional[str]:
+    """Header only.
+
+    The query-string form exists solely because `EventSource` cannot set
+    headers, and it is confined to `admin_token_for_sse`. Accepting it here too
+    meant a reset or a roster deletion could be driven by a URL, and uvicorn
+    writes the full request target — token included — to its access log.
+    """
     auth = request.headers.get("authorization") or request.headers.get("Authorization")
     if auth and auth.lower().startswith("bearer "):
         return auth.split(" ", 1)[1].strip()
-    qp = request.query_params.get("token")
-    if qp:
-        return qp.strip()
     return None
 
 
@@ -36,7 +52,7 @@ async def require_admin(
 ) -> None:
     expected = settings.admin_token
     given = _extract_token(request)
-    if not expected or not given or not hmac.compare_digest(expected, given):
+    if not expected or not given or not _matches(expected, given):
         raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="invalid token")
 
 
@@ -44,7 +60,7 @@ async def admin_token_for_sse(
     token: str = Query(default=""),
     settings: Settings = Depends(get_settings),
 ) -> bool:
-    if not token or not hmac.compare_digest(settings.admin_token, token):
+    if not token or not _matches(settings.admin_token, token):
         raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="invalid token")
     return True
 
@@ -87,7 +103,7 @@ class ViewGate:
             return True
         if not given:
             return False
-        return hmac.compare_digest(self.password, given.strip())
+        return _matches(self.password, given.strip())
 
 
 def _extract_view_password(request: Request) -> Optional[str]:

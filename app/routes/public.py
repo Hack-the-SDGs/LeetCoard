@@ -26,9 +26,12 @@ async def snapshot(request: Request, _: None = Depends(require_view)) -> dict:
 @router.get("/stream")
 async def stream(request: Request, _: None = Depends(require_view)):
     engine = request.app.state.engine
-    sub = await broadcaster.subscribe(audience="public")
 
     async def event_gen():
+        # Subscribe inside the generator. Registering before the response is
+        # first iterated leaves a subscriber behind if the client walks away in
+        # between, and nothing would ever unsubscribe it.
+        sub = await broadcaster.subscribe(audience="public")
         # Push current snapshot first.
         yield {
             "event": "snapshot",

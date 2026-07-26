@@ -12,14 +12,35 @@ from __future__ import annotations
 
 from datetime import datetime, timezone
 from enum import Enum
-from typing import Dict, List, Optional, Set
+from typing import Annotated, Dict, List, Optional, Set
 from uuid import uuid4
 
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import BaseModel, BeforeValidator, ConfigDict, Field
 
 
 def _utcnow() -> datetime:
     return datetime.now(timezone.utc)
+
+
+def _as_utc(value: object) -> object:
+    """Attach UTC to a naive datetime instead of letting it through.
+
+    A single naive timestamp in the state file used to poison every comparison
+    in the scoring path with `TypeError: can't compare offset-naive and
+    offset-aware datetimes`. The polling worker catches and logs that, so the
+    board looks healthy while nothing scores for the whole session.
+    """
+    if isinstance(value, str):
+        try:
+            value = datetime.fromisoformat(value)
+        except ValueError:
+            return value
+    if isinstance(value, datetime) and value.tzinfo is None:
+        return value.replace(tzinfo=timezone.utc)
+    return value
+
+
+UTCDateTime = Annotated[datetime, BeforeValidator(_as_utc)]
 
 
 class Difficulty(str, Enum):
@@ -71,6 +92,18 @@ class BonusTier(BaseModel):
     bonus_pts: int = Field(ge=0)
 
 
+class Window(BaseModel):
+    """One stretch of time during which a problem was open for scoring."""
+
+    opened_at: UTCDateTime
+    closed_at: Optional[UTCDateTime] = None
+
+    def contains(self, moment: datetime) -> bool:
+        if moment < self.opened_at:
+            return False
+        return self.closed_at is None or moment <= self.closed_at
+
+
 class Problem(BaseModel):
     title_slug: str
     difficulty: Difficulty
@@ -81,29 +114,48 @@ class Problem(BaseModel):
     color: Optional[str] = None  # css colour for status pip; defaults from difficulty
     beat_bonus_tiers: List[BonusTier] = Field(default_factory=list)
 
-    # Practice window. Opening starts scoring, closing stops it. Re-opening
-    # restarts the window from that moment, so an AC made while the problem was
-    # closed never scores. A problem that has been opened at least once stays
-    # visible on the public board forever, so earned points never disappear.
+    # Practice windows. Opening appends one, closing stamps its end. Every
+    # window a problem has ever had still scores, because "close this, open the
+    # next, oh wait let's reopen it" is a normal classroom move and a student
+    # who solved it during the first window must not be told 「problem closed」
+    # just because the poll that found them arrived after the second one began.
     is_open: bool = False
-    opened_at: Optional[datetime] = None
-    closed_at: Optional[datetime] = None
+    windows: List[Window] = Field(default_factory=list)
 
     @property
     def was_opened(self) -> bool:
         """True once the teacher has opened this problem at least once."""
-        return self.opened_at is not None
+        return bool(self.windows)
+
+    @property
+    def opened_at(self) -> Optional[datetime]:
+        return self.windows[-1].opened_at if self.windows else None
+
+    @property
+    def closed_at(self) -> Optional[datetime]:
+        return self.windows[-1].closed_at if self.windows else None
 
     def accepts(self, submitted_at: datetime) -> bool:
-        """True when `submitted_at` falls inside this problem's open window.
+        """True when `submitted_at` falls inside any window this problem had.
 
-        Closing records `closed_at` rather than slamming the door immediately,
-        so a submission made a second before the toggle still scores even
-        though the poll that discovers it arrives afterwards.
+        Closing records an end rather than slamming the door, so a submission
+        made a second before the toggle still scores even though the poll that
+        discovers it arrives afterwards.
         """
-        if self.opened_at is None or submitted_at < self.opened_at:
-            return False
-        return self.closed_at is None or submitted_at <= self.closed_at
+        return any(window.contains(submitted_at) for window in self.windows)
+
+    def open_now(self, moment: datetime) -> None:
+        if self.is_open:
+            return
+        self.is_open = True
+        self.windows.append(Window(opened_at=moment))
+
+    def close_now(self, moment: datetime) -> None:
+        if not self.is_open:
+            return
+        self.is_open = False
+        if self.windows and self.windows[-1].closed_at is None:
+            self.windows[-1].closed_at = moment
 
     def max_points(self) -> int:
         """Base points plus the most generous bonus tier."""
@@ -119,18 +171,22 @@ class Participant(BaseModel):
     score: int = 0
     rank: int = 0
     solved_problems: Set[str] = Field(default_factory=set)
-    problem_first_ac_at: Dict[str, datetime] = Field(default_factory=dict)
+    problem_first_ac_at: Dict[str, UTCDateTime] = Field(default_factory=dict)
+    # When this problem last *gained* points — first AC or a bonus top-up. The
+    # rank tie-break is built from these, and they are stored rather than
+    # derived so the incremental path and a full recompute can never disagree.
+    problem_last_scored_at: Dict[str, UTCDateTime] = Field(default_factory=dict)
     problem_bonus_pts: Dict[str, int] = Field(default_factory=dict)  # current bonus per problem (upgradable)
     problem_best_beat_pct: Dict[str, float] = Field(default_factory=dict)  # best beat% seen so far
-    reached_current_score_at: Optional[datetime] = None
-    added_at: datetime = Field(default_factory=_utcnow)
+    reached_current_score_at: Optional[UTCDateTime] = None
+    added_at: UTCDateTime = Field(default_factory=_utcnow)
 
     # LeetCode profile snapshot (refreshed by polling worker / on add).
     lc_ranking: Optional[int] = None
     lc_easy_total: int = 0
     lc_medium_total: int = 0
     lc_hard_total: int = 0
-    profile_fetched_at: Optional[datetime] = None
+    profile_fetched_at: Optional[UTCDateTime] = None
 
     model_config = ConfigDict(arbitrary_types_allowed=True)
 
@@ -162,8 +218,8 @@ class SubmissionEvent(BaseModel):
     title: Optional[str] = None
     status: str  # raw provider string ("Accepted", "Wrong Answer", ...)
     short_label: str  # AC, WA, TLE, RE, CE, MLE, OLE, ...
-    submitted_at: datetime
-    detected_at: datetime = Field(default_factory=_utcnow)
+    submitted_at: UTCDateTime
+    detected_at: UTCDateTime = Field(default_factory=_utcnow)
     points_delta: int = 0       # total points awarded (base + bonus)
     bonus_delta: int = 0        # bonus portion of points_delta (from beat-% tiers)
     beat_pct: Optional[float] = None  # runtime beat percentile reported by LeetCode
@@ -183,7 +239,7 @@ class Contest(BaseModel):
 
     events: List[SubmissionEvent] = Field(default_factory=list)
 
-    last_reset_at: Optional[datetime] = None
+    last_reset_at: Optional[UTCDateTime] = None
 
     model_config = ConfigDict(arbitrary_types_allowed=True)
 

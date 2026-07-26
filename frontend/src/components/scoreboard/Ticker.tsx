@@ -35,16 +35,20 @@ export default function Ticker({ events, colors }: Props) {
           還沒有提交紀錄。
         </p>
       ) : (
-        <div className="flex min-w-0 flex-1 items-stretch overflow-hidden">
-          <AnimatePresence initial={false}>
+        <div className="relative flex min-w-0 flex-1 items-stretch overflow-hidden">
+          {/* popLayout takes the departing item out of flow the instant it
+              starts leaving, so the survivors close the gap immediately instead
+              of waiting for a fade to finish and then snapping. New arrivals
+              come in from the left and push the oldest off the right. */}
+          <AnimatePresence initial={false} mode="popLayout">
             {visible.map((event) => (
               <motion.div
                 key={event.id}
                 layout
                 transition={SETTLE}
-                initial={{ opacity: 0 }}
-                animate={{ opacity: 1 }}
-                exit={{ opacity: 0 }}
+                initial={{ opacity: 0, x: -44 }}
+                animate={{ opacity: 1, x: 0 }}
+                exit={{ opacity: 0, x: 64, transition: { duration: 0.26, ease: [0.2, 0, 0, 1] } }}
                 className="flex min-w-0 flex-1 items-center gap-2.5 border-l border-ink-700 px-3 py-2"
               >
                 <Verdict event={event} color={teamColor(event.group_id, colors)} />

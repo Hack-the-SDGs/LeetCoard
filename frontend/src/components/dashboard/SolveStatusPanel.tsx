@@ -74,8 +74,12 @@ function ProblemRow({
   expanded: boolean;
   onToggle: () => void;
 }) {
+  // Taken from the problem's own solver list rather than each participant's
+  // `solved_problems`: the roster payload only moves when the roster changes,
+  // so this panel used to sit still while the board filled up behind it.
+  const solved = new Set(problem.solvers.map((s) => s.username));
   const unsolved = roster
-    .filter((p) => !p.solved_problems.includes(problem.title_slug))
+    .filter((p) => !solved.has(p.username))
     // Weakest first: that is the order a TA would work down the room in.
     .sort((a, b) => a.score - b.score || a.nickname.localeCompare(b.nickname));
   const solvedCount = roster.length - unsolved.length;
