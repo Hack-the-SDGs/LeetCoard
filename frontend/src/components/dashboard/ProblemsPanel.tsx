@@ -398,9 +398,13 @@ interface SearchHit {
 }
 
 /** What the row stores. Typing a slug by hand is still allowed, so spaces
- *  collapse to hyphens — but only on the way out, never in the input itself. */
+ *  collapse to hyphens — but only on the way out, never in the input itself.
+ *
+ *  Lowercased because slugs are: "Two Sum" typed by hand became `Two-Sum`,
+ *  which the upstream 404s and the engine never matches, so the problem sat on
+ *  the board scoring nothing for the whole class with no error anywhere. */
 function toSlug(raw: string): string {
-  return raw.trim().replace(/\s+/g, "-");
+  return raw.trim().toLowerCase().replace(/\s+/g, "-");
 }
 
 function SlugSearch({
