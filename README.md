@@ -194,8 +194,8 @@ leetcoard/
 `roster.txt` 放在專案根目錄，每行 `組別,姓名,username`，後端每次開機讀一次：
 
 ```
-1,蔡文諺,xiguawa
-4,張淮淇,Zhanghuaichi
+1,陳小明,alice
+4,王小華,bob
 ```
 
 - **`username` 是 LeetCode 帳號**，就是 `leetcode.com/u/<username>/` 中間那段。

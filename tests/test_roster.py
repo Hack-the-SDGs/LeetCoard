@@ -24,31 +24,31 @@ def _make_engine(tmp_path: Path, participants: dict[str, Participant] | None = N
 # ---- parsing ----------------------------------------------------------------
 
 def test_parses_group_name_username_in_that_order():
-    rows, errors = parse_roster("1,蔡文諺,xiguawa\n4,張淮淇,Zhanghuaichi")
+    rows, errors = parse_roster("1,陳小明,alice\n4,王小華,bob")
 
     assert errors == []
-    assert rows == [("xiguawa", "蔡文諺", 1), ("Zhanghuaichi", "張淮淇", 4)]
+    assert rows == [("alice", "陳小明", 1), ("bob", "王小華", 4)]
 
 
 def test_skips_blanks_comments_and_header():
-    text = "# 這是註解\n組別,姓名,username\n\n   \n1,蔡文諺,xiguawa\n"
+    text = "# 這是註解\n組別,姓名,username\n\n   \n1,陳小明,alice\n"
 
     rows, errors = parse_roster(text)
 
     assert errors == []
-    assert rows == [("xiguawa", "蔡文諺", 1)]
+    assert rows == [("alice", "陳小明", 1)]
 
 
 def test_empty_group_column_means_leave_the_team_alone():
-    rows, errors = parse_roster(",蔡文諺,xiguawa")
+    rows, errors = parse_roster(",陳小明,alice")
 
     assert errors == []
-    assert rows == [("xiguawa", "蔡文諺", None)]
+    assert rows == [("alice", "陳小明", None)]
 
 
 @pytest.mark.parametrize(
     "line",
-    ["1,蔡文諺", "1,,xiguawa", "1,蔡文諺,", "7,蔡文諺,xiguawa", "甲,蔡文諺,xiguawa"],
+    ["1,陳小明", "1,,alice", "1,陳小明,", "7,陳小明,alice", "甲,陳小明,alice"],
 )
 def test_rejects_unusable_lines_without_dropping_them_silently(line):
     rows, errors = parse_roster(line)
@@ -58,9 +58,9 @@ def test_rejects_unusable_lines_without_dropping_them_silently(line):
 
 
 def test_duplicate_handle_keeps_the_last_line_and_says_so():
-    rows, errors = parse_roster("1,舊名字,xiguawa\n2,新名字,XIGUAWA")
+    rows, errors = parse_roster("1,舊名字,alice\n2,新名字,ALICE")
 
-    assert rows == [("XIGUAWA", "新名字", 2)]
+    assert rows == [("ALICE", "新名字", 2)]
     assert any("重複" in e for e in errors)
 
 
