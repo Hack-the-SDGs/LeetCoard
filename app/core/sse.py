@@ -18,6 +18,15 @@ log = logging.getLogger("gdg.sse")
 
 _QUEUE_MAX = 64
 
+# One classroom is ~70 viewers plus the odd phone and a dashboard. Past this the
+# connections are not an audience, they are someone holding sockets open: each
+# one costs a queue and a buffered snapshot, and the board is what starves.
+MAX_SUBSCRIBERS = 250
+
+# A client that connects and never reads would otherwise pin its buffered
+# payload in the server's write queue for as long as it cares to stay.
+SEND_TIMEOUT_SEC = 10.0
+
 
 @dataclass(eq=False)  # identity hashable so it can live in a set
 class _Subscriber:
@@ -32,6 +41,11 @@ class _Subscriber:
 class Broadcaster:
     subs: Set[_Subscriber] = field(default_factory=set)
     _lock: asyncio.Lock = field(default_factory=asyncio.Lock)
+
+    def at_capacity(self) -> bool:
+        """Checked by the routes before the response starts — refusing inside
+        the generator would mean a 200 that immediately hangs up."""
+        return len(self.subs) >= MAX_SUBSCRIBERS
 
     async def subscribe(self, audience: str = "public") -> _Subscriber:
         sub = _Subscriber(sid=uuid4().hex, queue=asyncio.Queue(maxsize=_QUEUE_MAX), audience=audience)
@@ -54,7 +68,11 @@ class Broadcaster:
           - "admin"  : admin subscribers only
         """
 
-        payload = {"event": event, "data": data}
+        # Serialised once here rather than once per subscriber in `stream()`.
+        # The board payload is ~200 KB at classroom size, so per-subscriber
+        # encoding turned one accepted submission into tens of megabytes of
+        # json.dumps on the event loop — the whole app stalls while it runs.
+        payload = {"event": event, "data": _dump(data)}
         for sub in list(self.subs):
             if audience == "admin" and sub.audience != "admin":
                 continue
@@ -89,7 +107,7 @@ class Broadcaster:
             # streaming until the next event or the idle timeout.
             while True:
                 try:
-                    sub.queue.put_nowait({"event": "closed", "data": {}})
+                    sub.queue.put_nowait({"event": "closed", "data": "{}"})
                     break
                 except asyncio.QueueFull:
                     try:
@@ -110,21 +128,22 @@ class Broadcaster:
                     if sub.closed:
                         break
                     # Heartbeat — keeps proxies from killing the connection.
-                    yield {"event": "ping", "data": json.dumps({"ts": _now_iso()})}
+                    yield {"event": "ping", "data": _dump({"ts": _now_iso()})}
                     continue
                 # Drain the backlog and hang up on the goodbye itself. Breaking
                 # on `sub.closed` alone dropped the `closed` event whenever a
                 # queued item was collected first, which is the common case —
                 # and then the client fell back to a blind reconnect instead of
                 # re-authenticating straight away.
-                yield {
-                    "event": item["event"],
-                    "data": json.dumps(item["data"], ensure_ascii=False, default=str),
-                }
+                yield item  # already serialised by `broadcast`
                 if item["event"] == "closed":
                     break
         finally:
             await self.unsubscribe(sub)
+
+
+def _dump(obj: Any) -> str:
+    return json.dumps(obj, ensure_ascii=False, default=str)
 
 
 def _now_iso() -> str:

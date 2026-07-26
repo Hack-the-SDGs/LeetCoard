@@ -8,23 +8,31 @@ from __future__ import annotations
 
 import json
 
-from fastapi import APIRouter, Depends, Request
+from fastapi import APIRouter, Depends, HTTPException, Request, Response
 from sse_starlette.sse import EventSourceResponse
 
 from ..core.auth import require_view
-from ..core.sse import broadcaster
+from ..core.sse import SEND_TIMEOUT_SEC, broadcaster
 
 router = APIRouter()
 
 
 @router.get("/snapshot")
-async def snapshot(request: Request, _: None = Depends(require_view)) -> dict:
+async def snapshot(
+    request: Request, response: Response, _: None = Depends(require_view)
+) -> dict:
+    # What comes back depends on a request header, so any shared cache in front
+    # (a "cache everything" CDN rule, a school proxy) could otherwise replay one
+    # authorised fetch to everybody who asks without the password.
+    response.headers["Cache-Control"] = "private, no-store"
     engine = request.app.state.engine
     return engine.snapshot_dict(audience="public")
 
 
 @router.get("/stream")
 async def stream(request: Request, _: None = Depends(require_view)):
+    if broadcaster.at_capacity():
+        raise HTTPException(status_code=503, detail="too many stream subscribers")
     engine = request.app.state.engine
 
     async def event_gen():
@@ -42,7 +50,7 @@ async def stream(request: Request, _: None = Depends(require_view)):
                 break
             yield item
 
-    return EventSourceResponse(event_gen(), ping=15)
+    return EventSourceResponse(event_gen(), ping=15, send_timeout=SEND_TIMEOUT_SEC)
 
 
 def _json(obj) -> str:
