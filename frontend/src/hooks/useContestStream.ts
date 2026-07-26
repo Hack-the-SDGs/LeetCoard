@@ -126,11 +126,14 @@ export function useContestStream(opts: UseStreamOpts) {
       }, 1500 + Math.random() * 1500);
     };
 
-    const openStream = () => {
+    const openStream = (ticket?: string) => {
       const params: Record<string, string> = {};
-      if (isAdmin && opts.token) params.token = opts.token;
-      // EventSource cannot set headers, so the view password rides the query
-      // string the same way the admin token already does.
+      // A ticket, never the token itself: anything in a URL is written to the
+      // server's access log and kept in browser history, and this one is spent
+      // on first use and dead within 30s.
+      if (isAdmin && ticket) params.ticket = ticket;
+      // EventSource cannot set headers, so the view password still rides the
+      // query string — the server redacts it out of its access log.
       if (!isAdmin && opts.viewPassword) params.view = opts.viewPassword;
 
       es = new EventSource(streamUrl(streamPath, params));
@@ -221,7 +224,29 @@ export function useContestStream(opts: UseStreamOpts) {
         const snap = await resp.json().catch(() => null);
         if (snap && !cancelled) dispatch({ type: "snapshot", snapshot: snap });
       }
-      if (!cancelled) openStream();
+      if (cancelled) return;
+
+      if (!isAdmin) {
+        openStream();
+        return;
+      }
+
+      // Minted per connection, including every reconnect below — a ticket is
+      // single-use, so a retry must never replay the last one.
+      let ticket: string;
+      try {
+        const issued = await fetch(`${API_BASE}/api/admin/sse-ticket`, {
+          method: "POST",
+          headers: { Authorization: `Bearer ${opts.token ?? ""}` },
+        });
+        if (!issued.ok) throw new Error(String(issued.status));
+        ticket = (await issued.json()).ticket;
+      } catch {
+        dispatch({ type: "conn", conn: { connected: false, error: "stream ticket" } });
+        scheduleRetry();
+        return;
+      }
+      if (!cancelled) openStream(ticket);
     };
 
     /** Drop a socket that has gone quiet and start a fresh one. */

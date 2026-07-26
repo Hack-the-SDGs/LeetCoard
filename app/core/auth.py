@@ -1,9 +1,10 @@
 """Two separate secrets.
 
 `admin_token` opens the dashboard and every write endpoint. It is read from
-`Settings.admin_token` and passed as `Authorization: Bearer <token>` or
-`?token=...` (the SSE endpoint only supports the query string, because
-EventSource cannot set custom headers).
+`Settings.admin_token` and passed as `Authorization: Bearer <token>` — header
+only, everywhere. The SSE endpoint cannot use a header (EventSource refuses to
+set one), so it takes a short-lived ticket minted by an authenticated request
+instead of the token itself.
 
 `view_password` gates the public board so a class can't read each other's work
 off the projector feed. It starts from the environment and the dashboard can
@@ -13,7 +14,9 @@ override it for the running process.
 from __future__ import annotations
 
 import hmac
-from typing import Optional
+import secrets
+import time
+from typing import Dict, Optional
 
 from fastapi import Depends, HTTPException, Query, Request, status
 
@@ -35,10 +38,10 @@ def _matches(expected: str, given: str) -> bool:
 def _extract_token(request: Request) -> Optional[str]:
     """Header only.
 
-    The query-string form exists solely because `EventSource` cannot set
-    headers, and it is confined to `admin_token_for_sse`. Accepting it here too
-    meant a reset or a roster deletion could be driven by a URL, and uvicorn
-    writes the full request target — token included — to its access log.
+    A token in a URL is written to uvicorn's access log, kept in the browser's
+    history, and handed to whatever proxy sits in front. Nothing may drive a
+    reset or a roster deletion from a query string — and the one caller that
+    genuinely cannot send a header (SSE) gets a ticket instead, below.
     """
     auth = request.headers.get("authorization") or request.headers.get("Authorization")
     if auth and auth.lower().startswith("bearer "):
@@ -56,13 +59,32 @@ async def require_admin(
         raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="invalid token")
 
 
-async def admin_token_for_sse(
-    token: str = Query(default=""),
-    settings: Settings = Depends(get_settings),
-) -> bool:
-    if not token or not _matches(settings.admin_token, token):
-        raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="invalid token")
-    return True
+# `EventSource` cannot set headers, so the admin stream URL has to carry its
+# credential in the query string. Putting the real token there means the thing
+# that never expires ends up in the access log, in browser history and in every
+# proxy along the way. A ticket is minted by an authenticated request, expires
+# in 30 seconds and is spent on first use, so a copy scraped out of a log is
+# worthless by the time anyone reads it.
+_TICKET_TTL_SEC = 30.0
+_tickets: Dict[str, float] = {}
+
+
+def mint_sse_ticket() -> str:
+    now = time.monotonic()
+    for expired in [t for t, exp in _tickets.items() if exp <= now]:
+        _tickets.pop(expired, None)
+    ticket = secrets.token_urlsafe(32)
+    _tickets[ticket] = now + _TICKET_TTL_SEC
+    return ticket
+
+
+async def require_sse_ticket(ticket: str = Query(default="")) -> None:
+    # Popped whether or not it is still valid: a ticket is good for one stream.
+    expires_at = _tickets.pop(ticket, None) if ticket else None
+    if expires_at is None or expires_at <= time.monotonic():
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED, detail="invalid or expired ticket"
+        )
 
 
 class ViewGate:

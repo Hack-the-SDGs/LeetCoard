@@ -12,8 +12,8 @@ from fastapi import APIRouter, Depends, HTTPException, Request
 from pydantic import BaseModel, Field
 from sse_starlette.sse import EventSourceResponse
 
-from ..core.auth import admin_token_for_sse, require_admin
-from ..core.sse import broadcaster
+from ..core.auth import mint_sse_ticket, require_admin, require_sse_ticket
+from ..core.sse import SEND_TIMEOUT_SEC, broadcaster
 from ..domain.models import GROUP_COUNT, Difficulty, Group, Problem
 from ..domain.roster import FORMAT_HINT, parse_roster
 
@@ -106,8 +106,17 @@ async def admin_snapshot(request: Request, _: None = Depends(require_admin)) -> 
     return engine.snapshot_dict(audience="admin")
 
 
+@router.post("/sse-ticket")
+async def admin_sse_ticket(_: None = Depends(require_admin)) -> dict:
+    """One-shot credential for the admin stream, because EventSource cannot
+    send an Authorization header and the real token must never be in a URL."""
+    return {"ticket": mint_sse_ticket()}
+
+
 @router.get("/stream")
-async def admin_stream(request: Request, _: bool = Depends(admin_token_for_sse)):
+async def admin_stream(request: Request, _: None = Depends(require_sse_ticket)):
+    if broadcaster.at_capacity():
+        raise HTTPException(status_code=503, detail="too many stream subscribers")
     engine = request.app.state.engine
 
     async def event_gen():
@@ -123,7 +132,9 @@ async def admin_stream(request: Request, _: bool = Depends(admin_token_for_sse))
                 break
             yield item
 
-    return EventSourceResponse(event_gen(), ping=15)
+    # send_timeout: without it a client that connects and never reads pins its
+    # buffered snapshot in the server's write queue indefinitely.
+    return EventSourceResponse(event_gen(), ping=15, send_timeout=SEND_TIMEOUT_SEC)
 
 
 # ---- Problems ---------------------------------------------------------------
