@@ -1,0 +1,19 @@
+# The class list. Copy this to roster.txt and the server reads it at every boot.
+#
+#   組別,姓名,username
+#
+# 組別    1–6, matching the teams in the console. Leave it empty to keep
+#         whatever team the student is already in.
+# 姓名    what the projector shows.
+# username  the LeetCode handle, exactly as it appears in
+#           https://leetcode.com/u/<username>/ — a typo means that student is
+#           silently never polled and stays on zero all class.
+#
+# roster.txt is authoritative: anyone in the running board but not in the file
+# is removed on restart, along with their score. Blank lines and #-comments are
+# skipped. Restart the backend to apply changes, or paste the same lines into
+# the console's 學員 panel to apply them live.
+
+1,陳小明,xinshoutw
+1,王小華,alice
+2,李大十,bob

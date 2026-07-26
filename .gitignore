@@ -19,6 +19,12 @@ build/
 data/
 !data/.gitkeep
 
+# Real class roster — student names and LeetCode handles. roster.example.txt
+# is the committed template.
+roster.txt
+roster.*.txt
+!roster.example.txt
+
 # Node / Vite
 node_modules/
 frontend/dist/

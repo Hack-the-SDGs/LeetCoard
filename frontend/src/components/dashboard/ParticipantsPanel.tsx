@@ -16,9 +16,9 @@ interface BulkResult {
   errors: string[];
 }
 
-const PLACEHOLDER = `xinshoutw,陳小明,1
-alice,王小華,1
-bob,李大十,2`;
+const PLACEHOLDER = `1,陳小明,xinshoutw
+1,王小華,alice
+2,李大十,bob`;
 
 function errText(e: unknown): string {
   return e instanceof ApiError ? `${e.status}: ${e.message}` : String(e);
@@ -91,7 +91,7 @@ export default function ParticipantsPanel({ snapshot, token }: Props) {
 
       <div className="rule-b p-3">
         <label htmlFor="roster" className="font-mono text-[9px] tracking-label text-paper-faint">
-          貼上名單：USERNAME,姓名,組別
+          貼上名單：組別,姓名,USERNAME
         </label>
         <textarea
           id="roster"
@@ -110,7 +110,9 @@ export default function ParticipantsPanel({ snapshot, token }: Props) {
           >
             {busy ? "匯入中" : "匯入"}
           </button>
-          <span className="text-[11px] text-paper-faint">組別欄可留空，留空不會動到原本的組別</span>
+          <span className="text-[11px] text-paper-faint">
+            和 roster.txt 同一個格式。組別欄可留空，留空不會動到原本的組別
+          </span>
         </div>
         {msg && <p className="mt-2 text-[12px] text-paper-dim">{msg}</p>}
         {errors.length > 0 && (

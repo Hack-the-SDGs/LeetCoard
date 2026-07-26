@@ -169,8 +169,17 @@ engine = ContestEngine(store, Broadcaster(), settings)
 engine._recompute_scores()
 store._write_sync()
 
+# The demo needs its own roster file too, or the next boot would sync the state
+# file against the real class list and prune all 66 invented students.
+roster_file = OUT / "roster.txt"
+roster_file.write_text(
+    "\n".join(f"{group or ''},{name},{username}" for name, username, group in ROSTER) + "\n",
+    encoding="utf-8",
+)
+
 board = engine._leaderboard_snapshot()
 print(f"wrote {settings.state_file}")
+print(f"wrote {roster_file} — pass ROSTER_FILE={roster_file} when you boot")
 print(f"  {len(participants)} students, {len(PROBLEMS)} problems, {len(events)} events")
 for problem in PROBLEMS:
     solvers = engine._solvers_for(problem.title_slug)

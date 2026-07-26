@@ -5,8 +5,6 @@ All write/control surfaces live here. The public router is read-only.
 
 from __future__ import annotations
 
-import csv
-import io
 import json
 from typing import List, Optional
 
@@ -17,6 +15,7 @@ from sse_starlette.sse import EventSourceResponse
 from ..core.auth import admin_token_for_sse, require_admin
 from ..core.sse import broadcaster
 from ..domain.models import GROUP_COUNT, Difficulty, Group, Problem
+from ..domain.roster import FORMAT_HINT, parse_roster
 
 
 router = APIRouter()
@@ -61,7 +60,7 @@ class GroupsIn(BaseModel):
 
 
 class ParticipantsBulkIn(BaseModel):
-    text: str = Field(description="CSV-ish: lines of `username,nickname[,group_id]`")
+    text: str = Field(description=f"CSV-ish: lines of `{FORMAT_HINT}`")
 
 
 class ParticipantGroupIn(BaseModel):
@@ -195,29 +194,10 @@ async def set_problem_open(
 
 @router.put("/participants/bulk")
 async def bulk_upsert(body: ParticipantsBulkIn, request: Request, _: None = Depends(require_admin)) -> dict:
-    """Import `username,姓名[,組別]`. The group column is optional; leaving it
-    out keeps whatever the student is already assigned to."""
+    """Import `組別,姓名,username` — the same lines the roster file holds. An
+    empty group column keeps whatever team the student is already in."""
     engine = request.app.state.engine
-    rows: list[tuple[str, str, Optional[int]]] = []
-    line_errors: list[str] = []
-    reader = csv.reader(io.StringIO(body.text))
-    for idx, row in enumerate(reader, start=1):
-        cleaned = [c.strip() for c in row if c is not None]
-        if not cleaned or all(not c for c in cleaned):
-            continue
-        if cleaned[0].lower() in ("username", "user", "user_name"):  # header row
-            continue
-        if len(cleaned) < 2:
-            line_errors.append(f"第 {idx} 行：需要 `username,姓名[,組別]`")
-            continue
-        group_id: Optional[int] = None
-        if len(cleaned) >= 3 and cleaned[2]:
-            try:
-                group_id = int(cleaned[2])
-            except ValueError:
-                line_errors.append(f"第 {idx} 行：組別「{cleaned[2]}」不是數字")
-                continue
-        rows.append((cleaned[0], cleaned[1], group_id))
+    rows, line_errors = parse_roster(body.text, max_group=GROUP_COUNT)
     created, updated, errors, new_users = await engine.upsert_participants(rows)
 
     # Auto-trigger profile fetch for new users.

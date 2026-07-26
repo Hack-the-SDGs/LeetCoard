@@ -25,6 +25,11 @@ class Settings(BaseSettings):
     leetcode_sessions: str = ""
     leetcode_api_base: str = "https://leetcode-api-pied.vercel.app"
     data_dir: Path = Path("./data")
+    # The class list, read at every boot: `組別,姓名,username` per line. It is
+    # authoritative — anyone not in it is dropped on startup — so that editing
+    # one text file is the whole workflow. Missing file means "leave the roster
+    # alone", which is what you want on a scratch/demo run.
+    roster_file: Path = Path("./roster.txt")
 
     # Polling adapts per student: someone who just submitted is checked every
     # poll_min_interval_sec, someone idle backs off exponentially towards
@@ -41,7 +46,7 @@ class Settings(BaseSettings):
 
     cors_origins: str = "*"
 
-    @field_validator("data_dir", mode="before")
+    @field_validator("data_dir", "roster_file", mode="before")
     @classmethod
     def _expand(cls, v: str | Path) -> Path:
         return Path(v).expanduser()

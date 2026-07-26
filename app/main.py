@@ -14,6 +14,8 @@ from .core.auth import ViewGate
 from .core.config import get_settings
 from .core.sse import broadcaster
 from .core.storage import ContestStore
+from .domain.models import GROUP_COUNT
+from .domain.roster import load_roster_file
 from .domain.state import ContestEngine
 from .integrations.leetcode import LeetCodeClient
 from .routes import admin as admin_routes
@@ -54,6 +56,10 @@ async def lifespan(app: FastAPI):
 
     engine = ContestEngine(store, broadcaster, settings)
     app.state.engine = engine
+
+    # Before the polling worker starts, so it seeds profile fetches for whoever
+    # the file just added.
+    await load_roster_file(engine, settings.roster_file, max_group=GROUP_COUNT)
 
     # In-memory on purpose: a password set from the dashboard must not outlive
     # the process that was told about it.
