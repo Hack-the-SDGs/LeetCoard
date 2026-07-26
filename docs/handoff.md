@@ -28,25 +28,32 @@ Read `README.md` first — it covers the scoring rules, the team model, the
 polling behaviour and the classroom flow. This file only covers what a
 successor needs that the README does not say.
 
-## The next job: real data
+## Real data: done
 
-The owner will supply real names, team assignments and LeetCode usernames.
+The 2026 class list is loaded. `roster.txt` (gitignored, 51 students) is the
+source of truth; the backend syncs the live roster to it at every boot. Format
+is `組別,姓名,username`, same lines the console's 學員 panel accepts. See the
+README's 名單檔 section; `roster.example.txt` is the committed template.
 
-Import format is `username,姓名,組別` (one per line, third column optional and
-omitting it leaves an existing assignment alone). Paste it into the console's
-學員 panel, or `PUT /api/admin/participants/bulk` with `{"text": "..."}`.
+All 51 handles were checked against `leetcode-api-pied.vercel.app/user/<handle>`
+in this session: every one resolves, no case mismatches. Re-check after any
+roster edit — a typo is silent and costs that student the whole class.
 
-Watch for:
+The six team names and colours are hardcoded defaults in
+`app/domain/models.py::_DEFAULT_GROUPS`. They only apply to a fresh state file;
+an existing `contest.json` keeps whatever is in it.
 
-- **`username` is the LeetCode handle, not the student id.** Everything —
-  polling, avatars, profile links — keys off it. A typo means that student is
-  silently never polled. There is no validation that the handle exists.
+Still true:
+
 - `姓名` is shown on the projector. That is deliberate; the owner confirmed real
   names are fine.
 - Teams are fixed at six. Names and hex colours are editable in the console.
 - Delete `data/contest.json` **and** `data/contest.json.bak` before the first
   run with real data. Older state files do not parse against the current schema
   and a failed load starts empty, then overwrites the backup within two saves.
+- Roster sync **removes** anyone not in the file, scores included. Someone added
+  live from the console disappears on the next restart unless they are written
+  back into `roster.txt`.
 
 ## Things that will bite
 
@@ -70,13 +77,16 @@ Watch for:
 
 ## Looking at the board without a class
 
-`tools/seed_demo_board.py` writes a populated state file; `tools/fake_leetcode_api.py`
-is a stand-in upstream that invents submissions as it is polled, so the real
-polling worker, scoring engine and SSE path all run. See the README section
-「沒有真人也能看畫面」. The owner asked for these to be kept and expects to reuse
-or adjust them.
+`tools/seed_demo_board.py` writes a populated state file plus a matching
+`roster.txt` beside it; `tools/fake_leetcode_api.py` is a stand-in upstream that
+invents submissions as it is polled, so the real polling worker, scoring engine
+and SSE path all run. See the README section 「沒有真人也能看畫面」. The owner
+asked for these to be kept and expects to reuse or adjust them.
 
-**Never point `DATA_DIR` at the real folder when seeding** — it overwrites.
+**Never point `DATA_DIR` at the real folder when seeding** — it overwrites. And
+pass `ROSTER_FILE=./demo-data/roster.txt` when booting a demo, or the boot sync
+will measure the demo state against the real class list and prune every invented
+student.
 
 ## Deliberately not done
 
@@ -93,17 +103,20 @@ or adjust them.
 > 這個專案是 LeetCode 課堂練習即時計分板（FastAPI + React），分支
 > `feature/practice-mode`。先讀 `README.md` 和 `docs/handoff.md`，不要重新推導架構。
 >
-> 這次要做的是**灌入正式資料**：我會給你真實姓名、組別、以及對應的 LeetCode
-> username。匯入格式是 `username,姓名,組別`。
+> 名單已經灌好了：`roster.txt`（51 人，gitignore 中）是唯一來源，後端每次開機
+> 會照著它同步，格式 `組別,姓名,username`。六組的組名與顏色寫死在
+> `_DEFAULT_GROUPS`。
 >
 > 重要前提：
-> - `username` 是 LeetCode 帳號，打錯會導致那個人永遠不被輪詢，且系統不會報錯
+> - 改名單就改 `roster.txt` 然後重開後端；檔案裡沒有的人會連分數一起被移除
+> - `username` 打錯不會報錯，那個人只是永遠 0 分。改完建議逐一打 API 驗一次
 > - 第一次用正式資料前，要先刪掉 `data/contest.json` 與 `data/contest.json.bak`
 > - `.env` 的 `ADMIN_TOKEN` 還是開發用的值，上線前必須換掉
-> - 這個 repo 會轉為 private，但 `data/` 與 `.env` 仍然不可以推上遠端
+> - 這個 repo 會轉為 private，但 `data/`、`.env`、`roster.txt` 都不可以推上遠端
 > - **不要動 `.github/`**，裡面的截圖還沒經過我確認
 >
-> `tools/` 底下有假上游與假資料的腳本，請保留，我可能會再調整。
+> `tools/` 底下有假上游與假資料的腳本，請保留，我可能會再調整。跑 demo 時記得
+> 一起指定 `ROSTER_FILE=./demo-data/roster.txt`。
 >
 > 動手前先確認 `pytest -q`、`ruff check app tests`、`cd frontend && npm run build`
 > 都是綠的。

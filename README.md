@@ -182,23 +182,48 @@ leetcoard/
 
 固定六組，只能改組名與顏色，不能增減。指派方式三種都支援：
 
-- 批量匯入 `username,姓名,組別`，第三欄可略（留空不會動到既有組別）
+- 名單檔 `roster.txt`（見下節），開機時套用
+- 控制台批量匯入同樣的 `組別,姓名,username`，即時生效
 - 名單每列的下拉選單隨時改
-- 組別分數是即時加總，換組不需要搬移任何資料，分數跟著人走
+
+組別分數是即時加總，換組不需要搬移任何資料，分數跟著人走。組別顏色只要有人
+挑得偏暗（深紫、深青），壓在上面的字會自動翻成亮色，投影時才讀得到。
+
+## 名單檔
+
+`roster.txt` 放在專案根目錄，每行 `組別,姓名,username`，後端每次開機讀一次：
+
+```
+1,蔡文諺,xiguawa
+4,張淮淇,Zhanghuaichi
+```
+
+- **`username` 是 LeetCode 帳號**，就是 `leetcode.com/u/<username>/` 中間那段。
+  打錯不會有任何錯誤訊息，那個人只是永遠不會被輪詢、永遠 0 分
+- 組別欄可留空，留空不會動到那個人原本的組別
+- `#` 開頭與空行會略過
+- **這個檔案說了算**：板上有、檔案裡沒有的人，開機時會連分數一起移除。所以臨時
+  從控制台加進來的人，記得補回檔案，不然重開就不見了
+- 檔案不存在時完全不動名單；檔案存在但一行都讀不出來時會拒絕套用（避免手滑清空全班）
+- 改完要重開後端才生效；上課中要即時改，就把同樣幾行貼進控制台的「學員」面板
+
+`roster.txt` 已在 `.gitignore` 內（裡面是真實姓名）。格式範本見 `roster.example.txt`，
+換路徑用 `ROSTER_FILE`。
 
 ## 上課流程
 
 1. 填好 `.env`（`ADMIN_TOKEN` 必換；`LEETCODE_SESSIONS` 沒填就沒有 beat-% 加分；
    要鎖住畫面就填 `VIEW_PASSWORD`）
-2. 控制台：
-   - 設定六組的組名與顏色
-   - 貼上名單（`username,姓名,組別`）
+2. 把名單寫進 `roster.txt`（`組別,姓名,username`）後啟動後端，開機日誌會印出
+   實際套用了幾人
+3. 控制台：
+   - 確認六組的組名與顏色（預設已是這學期的六組）
    - 加題目、設分數與加分區間，按「儲存」
    - 需要的話在「觀看密碼」臨時換一組密碼，唸給全班
-3. 開場時所有題目都是關閉的，公開板上看不到任何題目，後端也不會呼叫 LeetCode API
-4. 要放哪一題就按哪一題的開關，題卡會出現在公開板上，輪詢同時啟動
-5. 講解前把題目關掉，卡片與成績會留在板上並置灰
-6. 需要重來時按「重置分數」，題目、名單、組別設定都會保留
+4. 開場時所有題目都是關閉的，公開板上看不到任何題目，後端也不會呼叫 LeetCode API
+5. 要放哪一題就按哪一題的開關，題卡會出現在公開板上，輪詢同時啟動
+6. 講解前把題目關掉，卡片與成績會留在板上並置灰
+7. 需要重來時按「重置分數」，題目、名單、組別設定都會保留
 
 ## 環境變數
 
@@ -209,6 +234,7 @@ leetcoard/
 | `LEETCODE_SESSIONS` | `""` | LEETCODE_SESSION cookie，逗號分隔多個 |
 | `LEETCODE_API_BASE` | `https://leetcode-api-pied.vercel.app` | upstream API |
 | `DATA_DIR` | `./data` | JSON 持久化資料夾 |
+| `ROSTER_FILE` | `./roster.txt` | 名單檔；不存在就不動名單 |
 | `POLL_MIN_INTERVAL_SEC` | `5` | 活躍學員的輪詢間隔下限 |
 | `POLL_MAX_INTERVAL_SEC` | `60` | 安靜學員退避到的上限 |
 | `POLL_MAX_RPS` | `6` | 全體合計請求上限（次/秒） |
@@ -234,12 +260,15 @@ FAKE_RATE=0.25 uvicorn tools.fake_leetcode_api:app --port 9999
 
 # 3. 後端指向它
 ADMIN_TOKEN=demo-token VIEW_PASSWORD=demo DATA_DIR=./demo-data \
+ROSTER_FILE=./demo-data/roster.txt \
 LEETCODE_API_BASE=http://127.0.0.1:9999 uvicorn app.main:app --port 8080
 ```
 
 `FAKE_RATE` 調高（0.25）會讓排名一直洗牌，適合看動畫；調低（0.05）比較接近真實
-節奏。`FAKE_AVATARS=1` 會發假的頭像網址。**別把 `DATA_DIR` 指到正式資料夾**，
-seed 腳本會直接覆蓋狀態檔。
+節奏。`FAKE_AVATARS=1` 會發假的頭像網址。seed 腳本會一併寫出對應的
+`demo-data/roster.txt`，`ROSTER_FILE` 一定要跟著指過去，不然開機時會拿真實名單
+去對，把 66 個假學員全部清掉。**別把 `DATA_DIR` 指到正式資料夾**，seed 腳本會
+直接覆蓋狀態檔。
 
 ## 開發
 
