@@ -6,7 +6,7 @@ import asyncio
 import logging
 from contextlib import asynccontextmanager
 
-from fastapi import FastAPI, Request
+from fastapi import FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
 
@@ -31,6 +31,79 @@ log = logging.getLogger("gdg.main")
 # Bodies are read and parsed before dependencies resolve, so an unauthenticated
 # caller can otherwise make the process allocate whatever it likes.
 _MAX_BODY_BYTES = 2 * 1024 * 1024
+
+_BODYLESS_METHODS = frozenset({"GET", "HEAD", "OPTIONS", "DELETE"})
+
+
+class _BodyTooLarge(HTTPException):
+    """An HTTPException on purpose: FastAPI wraps unknown exceptions raised while
+    reading a body into a generic 400, which would report a size limit as a
+    parse error."""
+
+    def __init__(self) -> None:
+        super().__init__(status_code=413, detail="request body too large")
+
+
+class BodySizeLimit:
+    """Cap the request body as it arrives, not as it claims to be.
+
+    Trusting `Content-Length` is not a limit: omitting it and sending
+    `Transfer-Encoding: chunked` skips the check entirely, and the framework
+    then buffers the whole body before any auth dependency runs. That makes
+    memory exhaustion an *unauthenticated* operation — a laptop serving a class
+    can be pushed over by anyone who can reach the port. Counting bytes off the
+    ASGI `receive` channel is the only version that actually holds.
+    """
+
+    def __init__(self, app, max_bytes: int) -> None:
+        self.app = app
+        self.max_bytes = max_bytes
+
+    async def __call__(self, scope, receive, send) -> None:
+        if scope["type"] != "http" or scope.get("method") in _BODYLESS_METHODS:
+            await self.app(scope, receive, send)
+            return
+
+        headers = {k.decode("latin-1").lower(): v for k, v in scope.get("headers", [])}
+        declared = headers.get("content-length")
+        if declared is not None:
+            try:
+                if int(declared) > self.max_bytes:
+                    await _reject(scope, send, 413, "request body too large")
+                    return
+            except ValueError:
+                await _reject(scope, send, 400, "bad content-length")
+                return
+
+        received = 0
+        started = False
+
+        async def counting_receive():
+            nonlocal received
+            message = await receive()
+            if message["type"] == "http.request":
+                received += len(message.get("body", b""))
+                if received > self.max_bytes:
+                    raise _BodyTooLarge()
+            return message
+
+        async def watching_send(message):
+            nonlocal started
+            if message["type"] == "http.response.start":
+                started = True
+            await send(message)
+
+        try:
+            await self.app(scope, counting_receive, watching_send)
+        except _BodyTooLarge:
+            # Only safe while nothing has gone out yet — which is the case,
+            # since the overrun is detected while the body is still being read.
+            if not started:
+                await _reject(scope, send, 413, "request body too large")
+
+
+async def _reject(scope, send, status: int, detail: str) -> None:
+    await JSONResponse({"detail": detail}, status_code=status)(scope, None, send)
 
 
 @asynccontextmanager
@@ -99,6 +172,12 @@ def create_app() -> FastAPI:
         title="GDG NTUST · LeetCode Practice Board API",
         version="0.2.0",
         lifespan=lifespan,
+        # Every route is gated, but the schema still hands a curious student the
+        # exact shape of the admin write surface. Nothing here needs to be
+        # browsable from the classroom.
+        docs_url=None,
+        redoc_url=None,
+        openapi_url=None,
     )
     app.add_middleware(
         CORSMiddleware,
@@ -107,16 +186,7 @@ def create_app() -> FastAPI:
         allow_methods=["*"],
         allow_headers=["*"],
     )
-    @app.middleware("http")
-    async def limit_body_size(request: Request, call_next):
-        declared = request.headers.get("content-length")
-        if declared is not None:
-            try:
-                if int(declared) > _MAX_BODY_BYTES:
-                    return JSONResponse({"detail": "request body too large"}, status_code=413)
-            except ValueError:
-                return JSONResponse({"detail": "bad content-length"}, status_code=400)
-        return await call_next(request)
+    app.add_middleware(BodySizeLimit, max_bytes=_MAX_BODY_BYTES)
 
     app.include_router(public_routes.router, prefix="/api", tags=["public"])
     app.include_router(admin_routes.router, prefix="/api/admin", tags=["admin"])
