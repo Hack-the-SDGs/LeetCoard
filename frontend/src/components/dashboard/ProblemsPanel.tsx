@@ -397,7 +397,9 @@ interface SearchHit {
   frontend_id: string | null;
 }
 
-function normaliseQuery(raw: string): string {
+/** What the row stores. Typing a slug by hand is still allowed, so spaces
+ *  collapse to hyphens — but only on the way out, never in the input itself. */
+function toSlug(raw: string): string {
   return raw.trim().replace(/\s+/g, "-");
 }
 
@@ -414,6 +416,10 @@ function SlugSearch({
   const [open, setOpen] = useState(false);
   const [loading, setLoading] = useState(false);
   const [pos, setPos] = useState<{ top: number; left: number; width: number } | null>(null);
+  // What is actually being typed, spaces and all. The row stores a slug, so
+  // feeding the row's value straight back into the input ate every space the
+  // moment it was pressed — and hyphenated queries match nothing upstream.
+  const [draft, setDraft] = useState(value);
   const inputRef = useRef<HTMLInputElement>(null);
   const dropdownRef = useRef<HTMLDivElement>(null);
   const debounceRef = useRef<number | null>(null);
@@ -447,8 +453,15 @@ function SlugSearch({
     return () => document.removeEventListener("mousedown", onClick);
   }, []);
 
+  // Adopt a slug set from outside — a dropdown pick, a fresh snapshot — without
+  // overwriting a half-typed query on every keystroke.
+  useEffect(() => {
+    setDraft((current) => (toSlug(current) === value ? current : value));
+  }, [value]);
+
   const runSearch = (raw: string) => {
-    const q = normaliseQuery(raw);
+    // Upstream matches titles, so it wants "two sum". "two-sum" returns nothing.
+    const q = raw.trim();
     if (q.length < 2) {
       setHits([]);
       setOpen(false);
@@ -487,6 +500,7 @@ function SlugSearch({
                 type="button"
                 onMouseDown={(e) => e.preventDefault()}
                 onClick={() => {
+                  setDraft(hit.title_slug);
                   onPick(hit.title_slug, hit.title, hit.frontend_id);
                   setOpen(false);
                 }}
@@ -507,14 +521,15 @@ function SlugSearch({
     <div className="relative min-w-0">
       <input
         ref={inputRef}
-        value={value}
+        value={draft}
         aria-label="題目"
         placeholder="搜尋題目關鍵字"
         onChange={(e) => {
-          onChange(normaliseQuery(e.target.value));
+          setDraft(e.target.value);
+          onChange(toSlug(e.target.value));
           runSearch(e.target.value);
         }}
-        onFocus={() => value.length >= 2 && setOpen(true)}
+        onFocus={() => draft.trim().length >= 2 && setOpen(true)}
         className="w-full rounded-sm border border-ink-700 bg-ink-950 px-2 py-1 font-mono text-[12px] outline-none focus:border-paper"
       />
       {dropdown}
