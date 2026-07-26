@@ -32,7 +32,7 @@ export default function Ticker({ events, colors }: Props) {
       </div>
       {visible.length === 0 ? (
         <p className="flex items-center px-2 py-3 text-[12px] text-paper-faint">
-          還沒有提交紀錄。
+          還沒有提交紀錄
         </p>
       ) : (
         <div className="relative flex min-w-0 flex-1 items-stretch overflow-hidden">

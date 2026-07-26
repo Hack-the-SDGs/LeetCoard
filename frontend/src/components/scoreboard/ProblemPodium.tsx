@@ -180,7 +180,7 @@ function Spread({
       </div>
       <div className="mt-1.5 flex items-baseline justify-between">
         <span className="tnum font-mono text-[9px] text-paper-faint">100</span>
-        <span className="font-mono text-[9px] tracking-label text-paper-faint">RUNTIME 百分位</span>
+        <span className="font-mono text-[9px] tracking-label text-paper-faint">RUNTIME</span>
         <span className="tnum font-mono text-[9px] text-paper-faint">0</span>
       </div>
     </div>
