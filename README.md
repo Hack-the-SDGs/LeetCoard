@@ -58,7 +58,9 @@ LeetCoard 是投影用的即時計分板，給社課現場帶練習題用。老�
   題兩種身價
 - **原子化持久化** — `data/contest.json` 以 `tmp + os.replace` 寫入並保留 `.bak`，
   重啟後狀態完整恢復
-- **多 cookie 輪替** — `LEETCODE_SESSIONS` 支援逗號分隔，自動 round-robin + cooldown
+- **多 cookie 輪替** — `LEETCODE_SESSIONS` 支援逗號分隔，自動 round-robin + cooldown。
+  只作用在查 beat-% 的 leetcode.com GraphQL 呼叫；提交列表走的是 pied API，本來就
+  不帶 cookie。全部 cookie 都在冷卻時直接跳過這一輪，不會硬送
 
 ## 前置需求
 
@@ -77,8 +79,8 @@ cd leetcoard
 # 後端
 python3 -m venv .venv
 source .venv/bin/activate
-pip install -e '.[dev]'
-cp .env.example .env   # 至少填 ADMIN_TOKEN
+pip install -e '.[dev]'   # 或 `uv sync --frozen`，照 uv.lock 裝，版本才固定
+cp .env.example .env   # 至少填 ADMIN_TOKEN（少於 24 字元或像佔位字串會拒絕啟動）
 
 # 前端
 cd frontend
@@ -322,8 +324,13 @@ npm run build
 npx wrangler deploy
 ```
 
-`wrangler.jsonc` 處理 SPA fallback；前端透過 `VITE_API_BASE` 直連 API origin
-（不走 Worker proxy，避免無限轉發）。
+`wrangler.jsonc` 處理 SPA fallback 與自訂網域；前端透過 `VITE_API_BASE` 直連 API
+origin（不走 Worker proxy，避免無限轉發）。
+
+部署後的來源必須出現在後端的 `CORS_ORIGINS` 裡。`wrangler.jsonc` 的 `routes` 若沒
+設，Worker 會發佈到 `*.workers.dev`，那個來源沒被允許，瀏覽器會把每個請求擋掉，
+而畫面上只會看到「正在連線」。`frontend/public/_headers` 一併帶上 CSP 與
+`X-Frame-Options`，控制台的 token 放在 localStorage，不能讓別的頁面把它嵌進 iframe。
 
 ## 已知假設
 

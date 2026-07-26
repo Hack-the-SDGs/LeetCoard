@@ -33,7 +33,9 @@ frontend/stats.html
 frontend/*.tsbuildinfo
 
 # uv
-uv.lock
+# uv.lock is committed on purpose: the deploy box installs from it, and every
+# backend dependency is declared as a bare `>=`, so without the lockfile a
+# rebuild resolves to whatever was published that morning.
 
 # IDE / OS
 .DS_Store
