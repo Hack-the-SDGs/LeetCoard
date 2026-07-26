@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import re
 from contextlib import asynccontextmanager
 
 from fastapi import FastAPI, HTTPException
@@ -28,9 +29,63 @@ logging.basicConfig(
 )
 log = logging.getLogger("gdg.main")
 
+
+class RedactQuerySecrets(logging.Filter):
+    """Keep credentials out of the access log.
+
+    `EventSource` cannot send headers, so the stream URLs carry a ticket and the
+    view password in the query string — and uvicorn writes the full request
+    target, query included, to its access log. The ticket expires in seconds,
+    but the view password does not.
+    """
+
+    _PATTERN = re.compile(r"((?:ticket|view|token|password)=)[^&\s\"']+", re.IGNORECASE)
+
+    def filter(self, record: logging.LogRecord) -> bool:
+        if isinstance(record.args, tuple):
+            record.args = tuple(
+                self._PATTERN.sub(r"\1<redacted>", a) if isinstance(a, str) else a
+                for a in record.args
+            )
+        return True
+
+
+logging.getLogger("uvicorn.access").addFilter(RedactQuerySecrets())
+
+# Long enough that guessing is hopeless, and long enough that no placeholder
+# anybody types by hand gets through.
+_MIN_ADMIN_TOKEN_LEN = 24
+
+
+def _require_real_admin_token(token: str) -> None:
+    """Refuse to start rather than warn.
+
+    This used to compare against the single literal "change-me" while the
+    placeholder actually in circulation was "dev-token-please-change" and
+    .env.example suggested a third string — so the one guard against shipping a
+    guessable admin credential never fired for any real placeholder. A warning
+    in a startup log nobody reads is not a safety net; failing to boot is.
+    """
+    lowered = token.strip().lower()
+    looks_placeholder = any(
+        marker in lowered for marker in ("change", "placeholder", "dev-token", "example")
+    )
+    if len(token.strip()) >= _MIN_ADMIN_TOKEN_LEN and not looks_placeholder:
+        return
+    raise RuntimeError(
+        "ADMIN_TOKEN is a placeholder or too short. It opens the console, the "
+        "reset button and the whole roster. Set it to at least "
+        f"{_MIN_ADMIN_TOKEN_LEN} random characters in .env — "
+        "`python -c 'import secrets; print(secrets.token_urlsafe(32))'` — "
+        "and restart."
+    )
+
 # Bodies are read and parsed before dependencies resolve, so an unauthenticated
-# caller can otherwise make the process allocate whatever it likes.
-_MAX_BODY_BYTES = 2 * 1024 * 1024
+# caller can otherwise make the process allocate — and json-parse — whatever it
+# likes. The largest legitimate body is a pasted roster: a 70-line class is a
+# few KB, so 64 KB is generous and still small enough that parsing it is not
+# worth anybody's time.
+_MAX_BODY_BYTES = 64 * 1024
 
 _BODYLESS_METHODS = frozenset({"GET", "HEAD", "OPTIONS", "DELETE"})
 
@@ -111,11 +166,12 @@ async def lifespan(app: FastAPI):
     settings = get_settings()
     log.info("Starting backend sessions=%d", len(settings.session_list))
 
-    if settings.admin_token == "change-me":
-        log.error(
-            "ADMIN_TOKEN is still the placeholder value. Anyone who reaches this "
-            "port can open the console, reset scores and delete the roster. "
-            "Set ADMIN_TOKEN in .env before letting anyone else near it."
+    _require_real_admin_token(settings.admin_token)
+    if not settings.view_password:
+        log.warning(
+            "VIEW_PASSWORD is empty, so /api/snapshot serves the roster — real "
+            "names, LeetCode handles and rankings — to anyone who asks. Fine if "
+            "that is the intent; set VIEW_PASSWORD if it is not."
         )
     if settings.cors_list == ["*"]:
         log.warning(
@@ -179,6 +235,11 @@ def create_app() -> FastAPI:
         redoc_url=None,
         openapi_url=None,
     )
+    # Order matters: `add_middleware` prepends, so the CORS layer must be added
+    # last to end up outermost. Added first, the 413 from BodySizeLimit escaped
+    # without CORS headers and an oversized roster paste surfaced in the
+    # dashboard as an opaque network error instead of "too large".
+    app.add_middleware(BodySizeLimit, max_bytes=_MAX_BODY_BYTES)
     app.add_middleware(
         CORSMiddleware,
         allow_origins=settings.cors_list,
@@ -186,7 +247,6 @@ def create_app() -> FastAPI:
         allow_methods=["*"],
         allow_headers=["*"],
     )
-    app.add_middleware(BodySizeLimit, max_bytes=_MAX_BODY_BYTES)
 
     app.include_router(public_routes.router, prefix="/api", tags=["public"])
     app.include_router(admin_routes.router, prefix="/api/admin", tags=["admin"])
