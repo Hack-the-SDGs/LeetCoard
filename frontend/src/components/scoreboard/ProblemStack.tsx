@@ -2,6 +2,7 @@ import { useState } from "react";
 import { AnimatePresence, motion } from "framer-motion";
 import ProblemPodium from "./ProblemPodium";
 import { teamColor, type TeamColors } from "../../lib/color";
+import { problemUrl } from "../../lib/leetcode";
 import type { ProblemPayload } from "../../lib/types";
 
 interface Props {
@@ -98,18 +99,19 @@ function ProblemCard({
     >
       {leaderColor && <LeaderFold color={leaderColor} />}
 
-      {problem.is_open ? (
-        heading
-      ) : (
+      {/* A closed card toggles from anywhere on the row, but the title is a link
+          to the problem, so the toggle sits underneath rather than wrapping it —
+          an <a> inside a <button> is neither valid nor keyboard-reachable. */}
+      {!problem.is_open && (
         <button
           type="button"
           onClick={onToggle}
           aria-expanded={expanded}
-          className="w-full text-left"
-        >
-          {heading}
-        </button>
+          aria-label={`展開 ${problem.title ?? problem.title_slug}`}
+          className="absolute inset-0 z-0"
+        />
       )}
+      {heading}
 
       <AnimatePresence initial={false}>
         {showPodium && (
@@ -152,7 +154,9 @@ function LeaderFold({ color }: { color: string }) {
 
 function Heading({ problem, compact }: { problem: ProblemPayload; compact?: boolean }) {
   return (
-    <div className="flex w-full items-baseline gap-3 pr-6">
+    // Transparent to the pointer so a click anywhere but the title reaches the
+    // expand button behind it; the title itself takes its clicks back.
+    <div className="pointer-events-none relative z-10 flex w-full items-baseline gap-3 pr-6">
       {/* Fixed width so #1 and #1768 put their titles on the same x. */}
       <span className="tnum w-[44px] shrink-0 text-right font-mono text-[12px] text-paper-faint">
         #{problem.frontend_id ?? "—"}
@@ -165,7 +169,15 @@ function Heading({ problem, compact }: { problem: ProblemPayload; compact?: bool
           (compact ? "text-[17px] text-paper-dim" : "text-[22px] text-paper")
         }
       >
-        {problem.title ?? problem.title_slug}
+        <a
+          href={problemUrl(problem.title_slug)}
+          target="_blank"
+          rel="noopener noreferrer"
+          title={`在 LeetCode 開啟 ${problem.title ?? problem.title_slug}`}
+          className="pointer-events-auto decoration-1 underline-offset-4 hover:underline"
+        >
+          {problem.title ?? problem.title_slug}
+        </a>
       </h3>
       <span className="shrink-0 whitespace-nowrap text-[12px] leading-tight text-paper-faint">
         共 <span className="tnum font-bold text-paper-dim">{problem.solvers.length}</span> 人已解出

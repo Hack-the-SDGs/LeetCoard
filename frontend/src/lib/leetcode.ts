@@ -10,6 +10,11 @@ export function profileUrl(username: string): string {
   return `https://leetcode.com/u/${encodeURIComponent(username)}/`;
 }
 
+/** The problem itself, for opening what is being taught. */
+export function problemUrl(slug: string): string {
+  return `https://leetcode.com/problems/${encodeURIComponent(slug)}/`;
+}
+
 export interface LcSearchHit {
   title: string;
   title_slug: string;
