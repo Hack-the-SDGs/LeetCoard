@@ -82,11 +82,20 @@ class ContestStore:
             self._flush_task = loop.create_task(self._delayed_flush())
 
     async def flush_now(self) -> None:
-        """Force an immediate write (e.g. on shutdown / state transitions)."""
+        """Force an immediate write (e.g. on shutdown / state transitions).
+
+        Unconditional on purpose. This used to write only when `_dirty` was
+        set, which made it a no-op for its main caller: opening a problem
+        mutates the model directly and never marks dirty, and on a quiet board
+        `_dirty` is False, so the flush that exists to guarantee the new window
+        reaches disk silently did nothing. A restart then brought the problem
+        back closed with its window gone, and every AC scored in that stretch
+        counted for nothing. Callers are state transitions and shutdown — a
+        handful per session — so writing one extra time costs nothing.
+        """
 
         async with self._lock:
-            if self._dirty or not self._path.exists():
-                self._write_sync()
+            self._write_sync()
 
     async def _delayed_flush(self) -> None:
         try:

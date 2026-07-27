@@ -482,6 +482,28 @@ async def test_reset_clears_scores_and_closes_every_window(tmp_path: Path):
 
 
 @pytest.mark.asyncio
+async def test_opening_a_problem_reaches_disk_on_a_quiet_board(tmp_path: Path):
+    """The flush behind the open switch must not depend on a pending write.
+
+    `flush_now` used to write only when something else had already marked the
+    store dirty. On a quiet board nothing has, so opening a problem wrote
+    nothing: a restart brought it back closed with its window gone, and every
+    AC scored in that stretch counted for nothing.
+    """
+    engine, store = _make_engine(tmp_path)
+    _seed(engine, problems=[_problem("two-sum", Difficulty.easy, 5, 0, opened_at=None)])
+    await store.flush_now()  # board at rest, nothing pending
+
+    await engine.set_problem_open("two-sum", True)
+
+    cfg = Settings(admin_token="t", data_dir=tmp_path)
+    store2 = ContestStore(cfg.state_file, cfg.state_backup_file)
+    store2.load_sync()
+    assert store2.contest.problems[0].is_open
+    assert store2.contest.problems[0].opened_at is not None
+
+
+@pytest.mark.asyncio
 async def test_persistence_roundtrip(tmp_path: Path):
     engine, store = _make_engine(tmp_path)
     _seed(engine)
