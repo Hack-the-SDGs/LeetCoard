@@ -19,7 +19,7 @@ export default function Scoreboard() {
   if (conn.unauthorized) {
     return (
       <ViewGate
-        error={viewPassword ? "密碼不正確，或老師已經換了密碼。" : null}
+        error={viewPassword ? "密碼不正確，或密碼已更換" : null}
         onSubmit={(password) => {
           localStorage.setItem(VIEW_KEY, password);
           setViewPassword(password);
