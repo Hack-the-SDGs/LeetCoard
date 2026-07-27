@@ -14,7 +14,7 @@ from sse_starlette.sse import EventSourceResponse
 
 from ..core.auth import mint_sse_ticket, require_admin, require_sse_ticket
 from ..core.sse import SEND_TIMEOUT_SEC, broadcaster
-from ..domain.models import GROUP_COUNT, Difficulty, Group, Problem
+from ..domain.models import GROUP_COUNT, LANG_CHOICES, LANG_SLUGS, Difficulty, Group, Problem
 from ..domain.roster import FORMAT_HINT, parse_roster
 
 
@@ -74,6 +74,10 @@ class ResetIn(BaseModel):
 
 class ViewPasswordIn(BaseModel):
     password: str = Field(default="", max_length=64)
+
+
+class CountedLangsIn(BaseModel):
+    langs: List[str] = Field(default_factory=list, max_length=len(LANG_SLUGS))
 
 
 # ---- Auth ping --------------------------------------------------------------
@@ -302,6 +306,38 @@ async def clear_view_password(request: Request, _: None = Depends(require_admin)
     gate.clear_override()
     await broadcaster.close_audience("public")
     return _view_state(gate)
+
+
+# ---- Counted languages ------------------------------------------------------
+
+def _lang_state(engine) -> dict:
+    return {
+        "ok": True,
+        "choices": [{"slug": slug, "label": label} for slug, label in LANG_CHOICES],
+        "counted": list(engine.contest.counted_langs),
+    }
+
+
+@router.get("/counted-langs")
+async def get_counted_langs(request: Request, _: None = Depends(require_admin)) -> dict:
+    return _lang_state(request.app.state.engine)
+
+
+@router.put("/counted-langs")
+async def set_counted_langs(
+    body: CountedLangsIn, request: Request, _: None = Depends(require_admin)
+) -> dict:
+    """Restrict scoring to these languages. An empty list means no restriction.
+
+    Unknown slugs are rejected rather than dropped: silently ignoring a typo
+    would leave the console showing a filter the engine never applies.
+    """
+    unknown = sorted({lang.strip().lower() for lang in body.langs} - set(LANG_SLUGS))
+    if unknown:
+        raise HTTPException(status_code=400, detail=f"未知的語言：{'、'.join(unknown)}")
+    engine = request.app.state.engine
+    await engine.set_counted_langs(body.langs)
+    return _lang_state(engine)
 
 
 # ---- Polling health ---------------------------------------------------------

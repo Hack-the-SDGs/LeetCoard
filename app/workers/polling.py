@@ -265,6 +265,11 @@ class PollingWorker:
         leetcode-api-pied's submission list lacks beat-%; we fetch each new AC's
         detail via LeetCode GraphQL. Skips already-seen ids to bound API load.
         Any failure is silent — beat-% bonus simply doesn't apply for that submission.
+
+        Submissions in a language that cannot score are skipped too. Their
+        percentile is thrown away by the scoring path, and this is the one call
+        that spends the teacher's own LeetCode session — a class grinding C++
+        must not burn that budget on numbers nobody will read.
         """
         seen = self._engine.contest.seen_submission_ids
         targets = [
@@ -273,6 +278,7 @@ class PollingWorker:
             and "runtimePercentile" not in s
             and str(s.get("id") or "") not in seen
             and s.get("id") is not None
+            and self._engine.counts_lang(s.get("lang"))
         ]
         if not targets:
             return

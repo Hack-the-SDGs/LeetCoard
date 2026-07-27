@@ -21,6 +21,8 @@ from ..core.scoring import compute_beat_bonus
 from ..core.sse import Broadcaster
 from ..core.storage import ContestStore
 from .models import (
+    DEFAULT_COUNTED_LANGS,
+    LANG_SLUGS,
     Contest,
     Difficulty,
     Group,
@@ -89,6 +91,7 @@ class _Parsed(NamedTuple):
     slug: str
     status: str
     submitted_at: datetime
+    lang: str  # LeetCode's language slug, e.g. "python3"; "" when absent
     raw: dict
 
 
@@ -113,7 +116,8 @@ def _parse_batch(raw_submissions: List[dict]) -> List[_Parsed]:
         except (TypeError, ValueError, OSError, OverflowError):
             continue
         status = sub.get("statusDisplay") or sub.get("status") or "Other"
-        parsed.append(_Parsed(sub_id, slug, status, submitted_at, sub))
+        lang = str(sub.get("lang") or "").strip().lower()
+        parsed.append(_Parsed(sub_id, slug, status, submitted_at, lang, sub))
     parsed.sort(key=lambda item: item.submitted_at)
     return parsed
 
@@ -595,6 +599,43 @@ class ContestEngine:
                 self._broadcast_problems()
             return changed
 
+    # -------- counted languages --------
+
+    def counts_lang(self, lang: Optional[str]) -> bool:
+        """Whether an AC written in `lang` may score.
+
+        An empty setting means no restriction. A submission whose language we
+        could not read counts too: the field comes from upstream, and reading a
+        missing one as "not Python" would silently stop the whole class from
+        scoring the moment the API drops it.
+
+        Public because the polling worker asks the same question before
+        spending a beat-% lookup on a submission.
+        """
+        counted = self.contest.counted_langs
+        normalised = str(lang or "").strip().lower()
+        if not counted or not normalised:
+            return True
+        return normalised in counted
+
+    async def set_counted_langs(self, langs: List[str]) -> List[str]:
+        """Replace the language filter; returns what was stored.
+
+        Applies to submissions detected from here on. Points already awarded
+        stay — the language of a past solve isn't recorded, so there is nothing
+        to recompute from, and taking points off a student mid-session over a
+        setting change is worse than letting the old ones stand.
+        """
+        wanted = {lang.strip().lower() for lang in langs}
+        normalised = [slug for slug in LANG_SLUGS if slug in wanted]
+        async with self._lock:
+            self.contest.counted_langs = normalised
+            # Flushed rather than marked dirty, for the same reason as opening a
+            # problem: this decides what scores, and losing it on restart means
+            # the board quietly counts the wrong submissions.
+            await self._store.flush_now()
+        return normalised
+
     # -------- participants --------
 
     async def upsert_participants(
@@ -740,6 +781,9 @@ class ContestEngine:
                     groups=[g.model_copy() for g in self.contest.groups]
                     if keep_config
                     else default_groups(),
+                    counted_langs=list(self.contest.counted_langs)
+                    if keep_config
+                    else list(DEFAULT_COUNTED_LANGS),
                     problems=problems,
                     participants=participants,
                     last_reset_at=_utcnow(),
@@ -820,6 +864,8 @@ class ContestEngine:
                     beat_pct = _extract_beat_pct(item.raw)
                     if not problem.accepts(item.submitted_at):
                         note = "problem closed"
+                    elif not self.counts_lang(item.lang):
+                        note = f"lang {item.lang} not counted"
                     else:
                         new_bonus = compute_beat_bonus(beat_pct, problem.beat_bonus_tiers)
                         best_so_far = participant.problem_best_beat_pct.get(item.slug)

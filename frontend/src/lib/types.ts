@@ -124,6 +124,17 @@ export interface PollingStatus {
   active_users: number;
 }
 
+export interface LangChoice {
+  slug: string; // LeetCode's language slug, e.g. "python3"
+  label: string;
+}
+
+export interface CountedLangsState {
+  choices: LangChoice[];
+  /** Languages that score. Empty = no restriction. */
+  counted: string[];
+}
+
 export interface ViewPasswordState {
   password: string;
   required: boolean;

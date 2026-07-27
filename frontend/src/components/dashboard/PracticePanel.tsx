@@ -2,6 +2,7 @@ import { useCallback, useEffect, useState } from "react";
 import { api, ApiError } from "../../lib/api";
 import type {
   AdminSnapshot,
+  CountedLangsState,
   GroupPayload,
   PollingStatus,
   ViewPasswordState,
@@ -25,6 +26,7 @@ export default function PracticePanel({ snapshot, token }: Props) {
   const [status, setStatus] = useState<PollingStatus | null>(null);
   const [view, setView] = useState<ViewPasswordState | null>(null);
   const [viewDraft, setViewDraft] = useState("");
+  const [langs, setLangs] = useState<CountedLangsState | null>(null);
 
   const loadView = useCallback(async () => {
     try {
@@ -39,6 +41,12 @@ export default function PracticePanel({ snapshot, token }: Props) {
   useEffect(() => {
     void loadView();
   }, [loadView]);
+
+  useEffect(() => {
+    api<CountedLangsState>("/api/admin/counted-langs", { token })
+      .then(setLangs)
+      .catch(() => undefined);
+  }, [token]);
 
   // Team edits are a form: only re-seed when the server actually sends a
   // different set, so typing a name isn't wiped by an unrelated broadcast.
@@ -89,6 +97,28 @@ export default function PracticePanel({ snapshot, token }: Props) {
         }),
       "組別已更新",
     );
+
+  // Applied on the spot, like the per-problem switches: this is a scoring rule
+  // the teacher changes while looking at the board, not a form to submit.
+  const toggleLang = (slug: string) => {
+    if (!langs) return;
+    const next = langs.counted.includes(slug)
+      ? langs.counted.filter((s) => s !== slug)
+      : [...langs.counted, slug];
+    void run(
+      "langs",
+      async () => {
+        setLangs(
+          await api<CountedLangsState>("/api/admin/counted-langs", {
+            method: "PUT",
+            token,
+            body: JSON.stringify({ langs: next }),
+          }),
+        );
+      },
+      next.length ? `採計語言：${next.join("、")}` : "不限語言，全部採計",
+    );
+  };
 
   const setAll = (open: boolean) => {
     // Closing everything is recoverable; opening everything puts the whole
@@ -202,13 +232,40 @@ export default function PracticePanel({ snapshot, token }: Props) {
 
         <hr className="my-5 border-ink-700" />
 
+        <p className="font-mono text-[9px] tracking-label text-paper-faint">採計語言</p>
+        <div className="mt-2 grid grid-cols-3 gap-x-3 gap-y-1.5">
+          {langs?.choices.map((choice) => (
+            <label
+              key={choice.slug}
+              className="flex cursor-pointer items-center gap-1.5 text-[12px] text-paper-dim hover:text-paper"
+            >
+              <input
+                type="checkbox"
+                checked={langs.counted.includes(choice.slug)}
+                onChange={() => toggleLang(choice.slug)}
+                disabled={busy === "langs"}
+                className="h-3 w-3 shrink-0 accent-paper"
+              />
+              {choice.label}
+            </label>
+          ))}
+        </div>
+        <p className="mt-2 text-[11px] leading-relaxed text-paper-faint">
+          {langs
+            ? "只有勾選語言的 AC 會計分，其他語言仍會出現在紀錄但拿不到分。全部不勾 = 不限語言"
+            : "讀取中"}
+          。設定只影響之後偵測到的提交，已入帳的分數不動。
+        </p>
+
+        <hr className="my-5 border-ink-700" />
+
         <p className="font-mono text-[9px] tracking-label text-paper-faint">觀看密碼</p>
         <input
           value={viewDraft}
           onChange={(e) => setViewDraft(e.target.value)}
           spellCheck={false}
           aria-label="觀看密碼"
-          placeholder="留空 = 任何人都能看"
+          placeholder="留空以公開"
           className="mt-2 w-full rounded-sm border border-ink-700 bg-ink-950 px-2 py-1 font-mono text-[13px] outline-none focus:border-paper"
         />
         <div className="mt-2 flex items-center gap-2">

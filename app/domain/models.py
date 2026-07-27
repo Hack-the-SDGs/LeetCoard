@@ -12,7 +12,7 @@ from __future__ import annotations
 
 from datetime import datetime, timezone
 from enum import Enum
-from typing import Annotated, Dict, List, Optional, Set
+from typing import Annotated, Dict, List, Optional, Set, Tuple
 from uuid import uuid4
 
 from pydantic import BaseModel, BeforeValidator, ConfigDict, Field
@@ -207,6 +207,31 @@ def default_problems() -> List["Problem"]:
     ]
 
 
+# LeetCode's own language slugs — the `lang` field on a submission — paired
+# with the label the submit page shows. The console renders checkboxes from
+# this list, so adding a language here is the only edit needed.
+LANG_CHOICES: Tuple[Tuple[str, str], ...] = (
+    ("python3", "Python3"),
+    ("python", "Python"),
+    ("cpp", "C++"),
+    ("c", "C"),
+    ("java", "Java"),
+    ("javascript", "JavaScript"),
+    ("typescript", "TypeScript"),
+    ("csharp", "C#"),
+    ("go", "Go"),
+    ("rust", "Rust"),
+    ("kotlin", "Kotlin"),
+    ("swift", "Swift"),
+)
+
+LANG_SLUGS: Tuple[str, ...] = tuple(slug for slug, _ in LANG_CHOICES)
+
+# The class is taught in Python, so that is what scores until the teacher says
+# otherwise.
+DEFAULT_COUNTED_LANGS: Tuple[str, ...] = ("python3",)
+
+
 class Participant(BaseModel):
     username: str
     nickname: str  # real name, shown on the public board instead of the handle
@@ -278,6 +303,10 @@ class Contest(BaseModel):
     groups: List[Group] = Field(default_factory=default_groups)
     problems: List[Problem] = Field(default_factory=default_problems)
     participants: Dict[str, Participant] = Field(default_factory=dict)  # keyed by username
+
+    # Which languages may score. An AC in a language that is not on this list
+    # is recorded as an event but awards nothing. Empty = no restriction.
+    counted_langs: List[str] = Field(default_factory=lambda: list(DEFAULT_COUNTED_LANGS))
 
     seen_submission_ids: Set[str] = Field(default_factory=set)
 
