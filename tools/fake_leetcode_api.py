@@ -12,6 +12,11 @@ Env:
   FAKE_SLUGS    comma-separated problem slugs to submit against
   FAKE_RATE     chance a given poll produces a new submission (0..1)
   FAKE_AVATARS  1 to hand out avatar URLs, 0 for the initials fallback
+  FAKE_JUDGE_SEC
+                seconds a new submission sits unjudged before its verdict
+                appears. LeetCode lists a submission the moment it is queued,
+                and a poll landing in that gap used to burn the id so the AC
+                never scored. 0 disables it.
   FAKE_PROFILE_UPSTREAM
                 base URL to fetch real profiles from, e.g.
                 https://leetcode-api-pied.vercel.app. Submissions stay invented;
@@ -35,6 +40,7 @@ from fastapi import FastAPI
 SLUGS = [s for s in os.environ.get("FAKE_SLUGS", "two-sum,valid-parentheses").split(",") if s]
 RATE = float(os.environ.get("FAKE_RATE", "0.12"))
 AVATARS = os.environ.get("FAKE_AVATARS", "0") == "1"
+JUDGE_SEC = float(os.environ.get("FAKE_JUDGE_SEC", "3"))
 PROFILE_UPSTREAM = os.environ.get("FAKE_PROFILE_UPSTREAM", "").rstrip("/")
 
 VERDICTS = (
@@ -109,6 +115,14 @@ def problem(slug: str) -> dict:
     return {"titleSlug": slug, "title": slug.replace("-", " ").title(), "questionFrontendId": "1"}
 
 
+def view(entry: dict) -> dict:
+    """What the API shows right now — pending until the judge has "run"."""
+    out = {k: v for k, v in entry.items() if not k.startswith("_")}
+    if time.time() < entry["_judge_at"]:
+        return {**out, "statusDisplay": "Pending", "isPending": "Pending"}
+    return {**out, "isPending": "Not Pending"}
+
+
 @app.get("/user/{username}/submissions")
 def submissions(username: str, limit: int = 10) -> list[dict]:
     """Each poll is a dice roll. A hit appends one fresh submission for this
@@ -123,6 +137,7 @@ def submissions(username: str, limit: int = 10) -> list[dict]:
             "statusDisplay": status,
             "titleSlug": random.choice(SLUGS),
             "timestamp": int(time.time()),
+            "_judge_at": time.time() + JUDGE_SEC,
         }
         if status == "Accepted":
             # Skewed high so re-solves keep nudging the percentile track.
@@ -130,4 +145,4 @@ def submissions(username: str, limit: int = 10) -> list[dict]:
         history[username].append(entry)
         del history[username][:-40]
 
-    return list(reversed(history[username][-limit:]))
+    return [view(e) for e in reversed(history[username][-limit:])]

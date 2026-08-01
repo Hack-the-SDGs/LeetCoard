@@ -95,17 +95,42 @@ class _Parsed(NamedTuple):
     raw: dict
 
 
+_NON_TERMINAL_STATUSES = {"pending", "judging", "started", "in queue", "running"}
+
+
+def _is_pending(sub: dict) -> bool:
+    """True while the judge has not returned a verdict for this submission.
+
+    LeetCode lists a submission as soon as it is queued. Ingesting that row puts
+    its id in `seen_submission_ids` permanently, so when the same submission
+    comes back a few seconds later as "Accepted" it is skipped as a duplicate
+    and never scores — the student sees nothing on the board until they submit
+    a second time. Whether a poll lands inside that judging window is pure
+    timing, which is why it looked intermittent.
+    """
+    status = str(sub.get("statusDisplay") or sub.get("status") or "").strip().lower()
+    if status in _NON_TERMINAL_STATUSES:
+        return True
+    # leetcode-api-pied passes LeetCode's own flag through verbatim: the string
+    # "Not Pending" once judged, anything else while it is still in flight.
+    flag = sub.get("isPending")
+    return isinstance(flag, str) and flag.strip().lower() not in ("", "not pending")
+
+
 def _parse_batch(raw_submissions: List[dict]) -> List[_Parsed]:
     """Readable submissions, oldest first.
 
     Order matters. The upstream API returns newest-first, and walking it in
     that order made both "first AC" and the rank tie-break depend on whether a
     student's two solves happened to land in one poll or two. Rows we cannot
-    read are dropped *without* being remembered, so one truncated response
-    doesn't burn that submission id forever.
+    read — and rows still being judged — are dropped *without* being remembered,
+    so neither a truncated response nor an unlucky poll burns that submission id
+    forever.
     """
     parsed: List[_Parsed] = []
     for sub in raw_submissions:
+        if _is_pending(sub):
+            continue
         sub_id = str(sub.get("id") or "")
         slug = sub.get("titleSlug") or sub.get("title_slug")
         ts_raw = sub.get("timestamp")
